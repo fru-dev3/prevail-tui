@@ -1,5 +1,7 @@
 # prevail-tui
 
+[![ci](https://github.com/fru-dev3/prevail-tui/actions/workflows/ci.yml/badge.svg)](https://github.com/fru-dev3/prevail-tui/actions/workflows/ci.yml)
+
 A terminal cockpit for the **prevail** engine — built as a **thin subprocess
 client** of the `prevail … --json` / NDJSON contract.
 
