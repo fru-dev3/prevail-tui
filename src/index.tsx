@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { App } from "./app.tsx";
 import type { DomainSummary, LifeScore } from "./contract.ts";
-import { EngineError, listDomains, resolvePrevailBin, scoreAll } from "./engine.ts";
+import { EngineError, engineVersion, listDomains, resolvePrevailBin, scoreAll } from "./engine.ts";
 
 const HELP = `prevail-tui — terminal cockpit for the prevail engine
 
@@ -94,13 +94,13 @@ async function main() {
 
   // Prefetch life-readiness + per-domain score badges so the cockpit opens
   // already populated. Non-fatal: the sidebar simply shows "··" until a tab
-  // visit computes a domain's score on demand.
-  let initialScores: LifeScore | null = null;
-  try {
-    initialScores = await scoreAll({ vault: vaultPath });
-  } catch {
-    initialScores = null;
-  }
+  // visit computes a domain's score on demand. Also resolve the engine version
+  // and the community-app count for the banner.
+  const [initialScores, engineVer] = await Promise.all([
+    scoreAll({ vault: vaultPath }).catch((): LifeScore | null => null),
+    engineVersion(),
+  ]);
+  const appCount = countCommunityApps();
 
   const renderer = await createCliRenderer({
     targetFps: 60,
@@ -108,8 +108,26 @@ async function main() {
     useMouse: true,
   });
   createRoot(renderer).render(
-    <App vaultPath={vaultPath} domains={domains} initialScores={initialScores} />,
+    <App
+      vaultPath={vaultPath}
+      domains={domains}
+      initialScores={initialScores}
+      appCount={appCount}
+      engineVer={engineVer}
+    />,
   );
+}
+
+// Count installed community connectors (~/.prevail/apps/*), mirroring the
+// cockpit's "N apps" stat. Best-effort: 0 if the dir doesn't exist.
+function countCommunityApps(): number {
+  try {
+    return readdirSync(join(homedir(), ".prevail", "apps"), { withFileTypes: true }).filter((e) =>
+      e.isDirectory(),
+    ).length;
+  } catch {
+    return 0;
+  }
 }
 
 main().catch((err) => die(err instanceof Error ? err.message : String(err)));

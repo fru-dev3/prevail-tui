@@ -1,5 +1,6 @@
 import { useKeyboard, useRenderer } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Branding, type CliHealth } from "./branding.tsx";
 import { type ChatMsg, ChatView } from "./chat.tsx";
 import type {
   ChatEvent,
@@ -13,15 +14,20 @@ import type {
 import { runCouncil } from "./council.ts";
 import {
   type EngineOpts,
+  engineVersion,
   getManifest,
+  probeClis,
   scoreAll,
   scoreDomain,
   scoreHistory,
   setManifest,
   streamChat,
 } from "./engine.ts";
+import { scoreColor, shortenPath } from "./format.ts";
+import { FRAMEWORKS, type FrameworkId, buildFrameworkPreamble, getFramework } from "./framework.ts";
+import { LENSES, type LensSelection, buildLensPreamble, getLens } from "./lens.ts";
 import { HistoryView, type ManifestEdit, ManifestView, ScoreView, StateView } from "./panes.tsx";
-import { Header, Sidebar } from "./sidebar.tsx";
+import { Sidebar } from "./sidebar.tsx";
 import { theme } from "./theme.ts";
 import { type DomainDocs, readDomainDocs, readDomainPrompts } from "./vault.ts";
 
@@ -65,10 +71,14 @@ export function App({
   vaultPath,
   domains,
   initialScores,
+  appCount,
+  engineVer,
 }: {
   vaultPath: string;
   domains: DomainSummary[];
   initialScores: LifeScore | null;
+  appCount: number;
+  engineVer: string;
 }) {
   const renderer = useRenderer();
   // Stable across renders so it's safe as an effect/callback dependency.
@@ -79,6 +89,15 @@ export function App({
   const [tab, setTab] = useState<Tab>("chat");
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
+
+  // banner defaults — client-side (the --json contract doesn't expose these).
+  // Framework/lens preambles are prepended to the prompt; council toggles the
+  // next turn to a panel fan-out; web is surfaced for parity (display-only).
+  const [councilOn, setCouncilOn] = useState(false);
+  const [framework, setFramework] = useState<FrameworkId | null>(null);
+  const [lens, setLens] = useState<LensSelection>(null);
+  const [webOn, setWebOn] = useState(true);
+  const [cliHealth, setCliHealth] = useState<CliHealth[]>([]);
 
   // chat
   const [msgsByDomain, setMsgs] = useState<Record<string, ChatMsg[]>>({});
@@ -116,6 +135,37 @@ export function App({
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // ── CLI health (probe once on boot; cheap `<cli> --version` each) ─────────────
+  useEffect(() => {
+    let cancelled = false;
+    probeClis()
+      .then((h) => {
+        if (!cancelled) setCliHealth(h);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Cycle the framework: none → bluf → … → none.
+  const cycleFramework = () =>
+    setFramework((cur) => {
+      const ids = FRAMEWORKS.map((f) => f.id);
+      if (cur === null) return ids[0];
+      const next = ids[ids.indexOf(cur) + 1];
+      return next ?? null;
+    });
+  // Cycle the lens: none → all → each lens → none.
+  const cycleLens = () =>
+    setLens((cur) => {
+      const ids = LENSES.map((l) => l.id);
+      if (cur === null) return "all";
+      if (cur === "all") return ids[0];
+      const next = ids[ids.indexOf(cur as (typeof ids)[number]) + 1];
+      return next ?? null;
+    });
 
   // ── starter prompts for the empty chat (cheap; load per domain on select) ─────
   useEffect(() => {
@@ -205,14 +255,20 @@ export function App({
         patchMsg(name, aid, { text: `⚠ ${e.error}`, cli: "error" });
     };
     const choice = cliByDomain[name] ?? {};
+    // Prepend the active framework + lens as bracket preambles (the cockpit's
+    // approach — the contract has no flag for these).
+    const preamble =
+      buildFrameworkPreamble(getFramework(framework)) +
+      buildLensPreamble(lens && lens !== "all" ? getLens(lens) : null);
     try {
       await streamChat(
         {
           domain: name,
-          message: text,
+          message: preamble + text,
           session: sessions.current[name],
           cli: choice.cli,
           model: choice.model,
+          localOnly: !webOn,
         },
         onEvent,
         opts,
@@ -391,7 +447,10 @@ export function App({
       }
     }
     setBusy(true);
-    sendSingle(name, text).finally(() => setBusy(false));
+    // With Council ON, every turn fans out to the panel + chair (the banner
+    // toggle is the global default; /council always forces it too).
+    const run = councilOn ? sendCouncil(name, text) : sendSingle(name, text);
+    run.finally(() => setBusy(false));
   }
 
   function recall(dir: -1 | 1) {
@@ -509,12 +568,22 @@ export function App({
   // ── render ──────────────────────────────────────────────────────────────────────
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={theme.bg}>
-      <Header
-        vaultPath={vaultPath}
-        lifeReadiness={lifeReadiness}
+      <Branding
         domainCount={domains.length}
-        openLoops={openLoops}
+        totalLoops={openLoops}
+        appCount={appCount}
+        vaultLabel={shortenPath(vaultPath)}
+        engineVersion={engineVer}
         now={now}
+        councilOn={councilOn}
+        framework={framework}
+        lens={lens}
+        webOn={webOn}
+        onToggleCouncil={() => setCouncilOn((c) => !c)}
+        onCycleFramework={cycleFramework}
+        onCycleLens={cycleLens}
+        onToggleWeb={() => setWebOn((w) => !w)}
+        cliHealth={cliHealth}
       />
 
       <box flexDirection="row" flexGrow={1}>
@@ -572,7 +641,7 @@ export function App({
         </box>
       </box>
 
-      <Footer focus={focus} tab={tab} />
+      <Footer focus={focus} tab={tab} lifeReadiness={lifeReadiness} />
     </box>
   );
 }
@@ -589,7 +658,15 @@ function TabStrip({ tab }: { tab: Tab }) {
   );
 }
 
-function Footer({ focus, tab }: { focus: Focus; tab: Tab }) {
+function Footer({
+  focus,
+  tab,
+  lifeReadiness,
+}: {
+  focus: Focus;
+  tab: Tab;
+  lifeReadiness: number | null;
+}) {
   let hint: string;
   if (focus === "chat") hint = "enter send · ↑/↓ recall · /help commands · esc → domains";
   else if (focus === "manifest-edit") hint = "enter save · esc cancel";
@@ -598,8 +675,17 @@ function Footer({ focus, tab }: { focus: Focus; tab: Tab }) {
     hint = "↑/↓ domain · ←/→ tab · e label · m summary · i chat · q quit";
   else hint = "↑/↓ domain · ←/→ tab (1-5) · i/⏎ chat · r refresh · q quit";
   return (
-    <box paddingLeft={1}>
+    <box flexDirection="row" paddingLeft={1} paddingRight={1}>
       <text fg={theme.fgFaint}>{hint}</text>
+      <box flexGrow={1} />
+      <text fg={theme.fgFaint}>life </text>
+      {lifeReadiness === null ? (
+        <text fg={theme.fgFaint}>··</text>
+      ) : (
+        <text fg={scoreColor(lifeReadiness)} attributes={1}>
+          {String(lifeReadiness)}
+        </text>
+      )}
     </box>
   );
 }

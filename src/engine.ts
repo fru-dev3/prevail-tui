@@ -167,6 +167,57 @@ export function setManifest(
   );
 }
 
+// ── Environment probes (engine version + installed CLIs) ─────────────────────
+/** Resolve the installed engine's semver, e.g. "1.6.5" (or "?" if unavailable). */
+export async function engineVersion(): Promise<string> {
+  try {
+    const proc = Bun.spawn([resolvePrevailBin(), "--version"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      env: buildEnv(),
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return out.match(/(\d+\.\d+\.\d+)/)?.[1] ?? (out.trim() || "?");
+  } catch {
+    return "?";
+  }
+}
+
+export interface CliHealth {
+  kind: string;
+  label: string;
+  ok: boolean | null;
+}
+
+// The model CLIs the engine can drive, with the binary each resolves to.
+// Mirrors the cockpit's detection set (claude/codex/antigravity/ollama).
+const PROBE_CLIS: { kind: string; label: string; bin: string }[] = [
+  { kind: "claude", label: "Claude", bin: "claude" },
+  { kind: "codex", label: "Codex", bin: "codex" },
+  { kind: "antigravity", label: "Antigravity", bin: "agy" },
+  { kind: "ollama", label: "Ollama", bin: "ollama" },
+];
+
+/** Probe each model CLI's `--version` (2.5s budget each); ok=true on exit 0. */
+export function probeClis(): Promise<CliHealth[]> {
+  return Promise.all(
+    PROBE_CLIS.map(async ({ kind, label, bin }): Promise<CliHealth> => {
+      try {
+        const proc = Bun.spawn([bin, "--version"], {
+          stdout: "ignore",
+          stderr: "ignore",
+          env: buildEnv(),
+          signal: AbortSignal.timeout(2500),
+        });
+        return { kind, label, ok: (await proc.exited) === 0 };
+      } catch {
+        return { kind, label, ok: false };
+      }
+    }),
+  );
+}
+
 // ── Streaming chat (NDJSON) ──────────────────────────────────────────────────
 /**
  * Drive a single-CLI chat turn. The message is written to stdin; each NDJSON
