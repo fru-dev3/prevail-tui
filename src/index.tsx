@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { App } from "./app.tsx";
-import type { DomainSummary } from "./contract.ts";
-import { EngineError, listDomains, resolvePrevailBin } from "./engine.ts";
+import type { DomainSummary, LifeScore } from "./contract.ts";
+import { EngineError, listDomains, resolvePrevailBin, scoreAll } from "./engine.ts";
 
 const HELP = `prevail-tui — terminal cockpit for the prevail engine
 
@@ -92,12 +92,24 @@ async function main() {
     die(`No domains in vault: ${vaultPath}\nCreate one with \`prevail\` or \`prevail onboard\`.`);
   }
 
+  // Prefetch life-readiness + per-domain score badges so the cockpit opens
+  // already populated. Non-fatal: the sidebar simply shows "··" until a tab
+  // visit computes a domain's score on demand.
+  let initialScores: LifeScore | null = null;
+  try {
+    initialScores = await scoreAll({ vault: vaultPath });
+  } catch {
+    initialScores = null;
+  }
+
   const renderer = await createCliRenderer({
     targetFps: 60,
     exitOnCtrlC: true,
     useMouse: true,
   });
-  createRoot(renderer).render(<App vaultPath={vaultPath} domains={domains} />);
+  createRoot(renderer).render(
+    <App vaultPath={vaultPath} domains={domains} initialScores={initialScores} />,
+  );
 }
 
 main().catch((err) => die(err instanceof Error ? err.message : String(err)));

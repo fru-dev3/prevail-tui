@@ -20,6 +20,7 @@ import {
   type DomainSummary,
   type JsonError,
   type LifeScore,
+  type ManifestPatch,
   type ScoreHistory,
   isJsonError,
 } from "./contract.ts";
@@ -156,7 +157,7 @@ export function getManifest(domain: string, opts?: EngineOpts): Promise<DomainMa
 
 export function setManifest(
   domain: string,
-  patch: Partial<DomainManifest>,
+  patch: ManifestPatch,
   opts?: EngineOpts,
 ): Promise<DomainManifest> {
   return runJson<DomainManifest>(

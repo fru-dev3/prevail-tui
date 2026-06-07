@@ -87,21 +87,57 @@ export interface DomainSummary {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // score <domain> [--audit] --json  →  ContextScore
+//
+// Severity ladder the engine emits across missing items + relevance items.
+export type Severity = "critical" | "warn" | "info" | string;
+
+/** One of the six frozen scoring dimensions: { score 0–100, human detail }. */
+export interface ScoreDimension {
+  score: number;
+  detail: string;
+}
+
+/** A gap the engine surfaced (a missing file, structure, config, or audit note). */
 export interface MissingItem {
   label: string;
-  severity?: "low" | "medium" | "high" | string;
+  severity?: Severity;
+  /** "file" | "structure" | "config" | "audit" | … */
   kind?: string;
+}
+
+/** One expected, domain-specific item from the relevance rubric (e.g. wealth → net worth). */
+export interface RelevanceItem {
+  id: string;
+  label: string;
+  present: boolean;
+  stale: boolean;
+  severity?: Severity;
+  detail?: string;
+  recommend?: string;
+}
+
+/** The per-domain relevance layer — only populated when a rubric matched the domain. */
+export interface Relevance {
+  matched: string;
+  score: number;
+  detail?: string;
+  items: RelevanceItem[];
 }
 
 export interface ContextScore {
   domain: string;
   score: number;
-  breakdown?: Record<string, number>;
-  relevance?: number;
+  /** Six frozen dimensions: coverage, density, freshness, structure, activity, config_completeness. */
+  breakdown?: Record<string, ScoreDimension>;
+  relevance?: Relevance | null;
   missing?: MissingItem[];
+  /** LLM narrative from the last audit (may be cached even without --audit). */
   assessment?: string | null;
+  /** e.g. "claude:claude-opus-4-7" — which CLI produced the assessment. */
   audit_source?: string | null;
-  ts?: number;
+  freshness_secs?: number;
+  computed_at?: string | null;
+  audited_at?: string | null;
 }
 
 // score --all --json
@@ -114,14 +150,47 @@ export interface LifeScore {
 export type ScoreHistory = Array<{ ts: number; score: number }>;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// manifest get/set <domain> --json  →  DomainManifest (loose; CLI may add fields)
-export interface DomainManifest {
+// manifest get/set <domain> --json  →  DomainManifest
+//
+// The manifest is nested (identity / config / …); `set` deep-merges a partial
+// patch (e.g. {"identity":{"summary":"…"}}) and returns the merged result.
+export interface ManifestIdentity {
   name?: string;
   label?: string;
   emoji?: string;
   summary?: string;
+  created?: string;
+}
+
+export interface ManifestConfig {
+  cli?: CliKind | string;
+  model?: string;
+  framework?: string | null;
+  lens?: string | null;
+  skills?: string[];
+  autoState?: boolean;
+}
+
+export interface DomainManifest {
+  schema?: number;
+  identity?: ManifestIdentity;
+  config?: ManifestConfig;
+  context_score?: ContextScore;
+  goals?: unknown;
+  heartbeat?: unknown;
+  routing?: unknown;
+  sandbox?: unknown;
+  privacy?: unknown;
   archived?: boolean;
   archived_at?: string | null;
+  [key: string]: unknown;
+}
+
+/** A deep-merge patch accepted by `manifest set`. */
+export interface ManifestPatch {
+  identity?: Partial<ManifestIdentity>;
+  config?: Partial<ManifestConfig>;
+  archived?: boolean;
   [key: string]: unknown;
 }
 
