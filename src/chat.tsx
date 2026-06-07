@@ -46,6 +46,7 @@ export function ChatView({
   domain,
   msgs,
   busy,
+  engineLabel,
   inputRef,
   inputFocused,
   onSubmit,
@@ -53,6 +54,8 @@ export function ChatView({
   domain: DomainSummary;
   msgs: ChatMsg[];
   busy: boolean;
+  /** active cli/model for this domain, e.g. "claude" or "codex · gpt-5". */
+  engineLabel: string;
   inputRef: React.RefObject<unknown>;
   inputFocused: boolean;
   onSubmit: (value: string) => void;
@@ -72,9 +75,10 @@ export function ChatView({
       </scrollbox>
 
       {/* status line */}
-      <box paddingLeft={1}>
+      <box flexDirection="row" paddingLeft={1}>
         <text fg={theme.fgFaint}>
           {turns > 0 ? `${turns} turn${turns === 1 ? "" : "s"}` : "new thread"}
+          {`  ·  ${engineLabel}`}
           {busy ? "  ·  streaming…" : ""}
         </text>
       </box>

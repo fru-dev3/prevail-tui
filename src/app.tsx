@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { type ChatMsg, ChatView } from "./chat.tsx";
 import type {
   ChatEvent,
+  CliKind,
   ContextScore,
   DomainManifest,
   DomainSummary,
@@ -37,16 +38,25 @@ const DEFAULT_PANEL = [
 ];
 const DEFAULT_CHAIR = { cli: "claude" as const };
 
+const CLI_KINDS: CliKind[] = ["claude", "codex", "antigravity", "gemini", "ollama"];
+
+interface CliChoice {
+  cli?: CliKind;
+  model?: string;
+}
+
 const SLASH_HELP = [
-  "/council <q>   fan the question out to the panel + chair synthesis",
-  "/state         jump to the state tab (read-only vault markdown)",
-  "/score         jump to the score tab",
-  "/audit         run a fresh LLM audit of this domain",
-  "/manifest      jump to the manifest tab",
-  "/history       jump to the score-history tab",
-  "/clear         reset this domain's conversation",
-  "/help          show this list",
-  "/exit          return focus to the domain list (same as esc)",
+  "/claude [model]   switch this domain's chat to claude (codex|gemini|antigravity|ollama too)",
+  "/model <name>     set the model on the current cli · /model default clears it",
+  "/council <q>      fan the question out to the panel + chair synthesis",
+  "/state            jump to the state tab (read-only vault markdown)",
+  "/score            jump to the score tab",
+  "/audit            run a fresh LLM audit of this domain",
+  "/manifest         jump to the manifest tab",
+  "/history          jump to the score-history tab",
+  "/clear            reset this domain's conversation",
+  "/help             show this list",
+  "/exit             return focus to the domain list (same as esc)",
 ].join("\n");
 
 let nextId = 1;
@@ -73,6 +83,7 @@ export function App({
   // chat
   const [msgsByDomain, setMsgs] = useState<Record<string, ChatMsg[]>>({});
   const sessions = useRef<Record<string, string>>({});
+  const [cliByDomain, setCliByDomain] = useState<Record<string, CliChoice>>({});
   const promptHistory = useRef<Record<string, string[]>>({});
   const recallIdx = useRef<number>(-1);
   const chatInputRef = useRef<{ value?: string; setText?: (s: string) => void } | null>(null);
@@ -177,9 +188,16 @@ export function App({
       } else if (e.type === "error" && e.error)
         patchMsg(name, aid, { text: `⚠ ${e.error}`, cli: "error" });
     };
+    const choice = cliByDomain[name] ?? {};
     try {
       await streamChat(
-        { domain: name, message: text, session: sessions.current[name] },
+        {
+          domain: name,
+          message: text,
+          session: sessions.current[name],
+          cli: choice.cli,
+          model: choice.model,
+        },
         onEvent,
         opts,
       );
@@ -287,6 +305,32 @@ export function App({
     if (text.startsWith("/")) {
       const [cmd, ...rest] = text.slice(1).split(" ");
       const arg = rest.join(" ").trim();
+
+      // CLI switch: /claude /codex /gemini /antigravity /ollama [model]
+      if ((CLI_KINDS as string[]).includes(cmd)) {
+        const cli = cmd as CliKind;
+        const model = arg || undefined;
+        setCliByDomain((m) => ({ ...m, [name]: { cli, model } }));
+        pushMsg(name, {
+          id: nextId++,
+          role: "system",
+          text: `engine → ${cli}${model ? ` · ${model}` : ""}`,
+          cli: "system",
+        });
+        return;
+      }
+      if (cmd === "model") {
+        const model = arg && arg !== "default" ? arg : undefined;
+        setCliByDomain((m) => ({ ...m, [name]: { ...(m[name] ?? {}), model } }));
+        pushMsg(name, {
+          id: nextId++,
+          role: "system",
+          text: model ? `model → ${model}` : "model cleared (cli default)",
+          cli: "system",
+        });
+        return;
+      }
+
       switch (cmd) {
         case "council":
           if (arg) {
@@ -489,6 +533,7 @@ export function App({
               domain={domain}
               msgs={msgs}
               busy={busy}
+              engineLabel={engineLabel(cliByDomain[domain.name])}
               inputRef={chatInputRef}
               inputFocused={focus === "chat"}
               onSubmit={submitChat}
@@ -540,6 +585,11 @@ function Footer({ focus, tab }: { focus: Focus; tab: Tab }) {
       <text fg={theme.fgFaint}>{hint}</text>
     </box>
   );
+}
+
+function engineLabel(choice: CliChoice | undefined): string {
+  if (!choice?.cli) return "default cli";
+  return choice.model ? `${choice.cli} · ${choice.model}` : choice.cli;
 }
 
 function errMsg(err: unknown): string {
