@@ -57,6 +57,7 @@ export function ChatView({
   msgs,
   busy,
   engineLabel,
+  suggestions,
   inputRef,
   inputFocused,
   onSubmit,
@@ -66,6 +67,8 @@ export function ChatView({
   busy: boolean;
   /** active cli/model for this domain, e.g. "claude" or "codex · gpt-5". */
   engineLabel: string;
+  /** starter-prompt titles from PROMPTS.md, shown on an empty thread. */
+  suggestions: string[];
   inputRef: React.RefObject<unknown>;
   inputFocused: boolean;
   onSubmit: (value: string) => void;
@@ -77,7 +80,15 @@ export function ChatView({
         {msgs.length === 0 ? (
           <box flexDirection="column" paddingTop={1}>
             <text fg={theme.fgDim}>{`Ask ${domain.label ?? domain.name} anything.`}</text>
-            <text fg={theme.fgFaint}>{"/council <q> · /score · /audit · /clear · /help"}</text>
+            {suggestions.length > 0 ? (
+              <box flexDirection="column" paddingTop={1}>
+                <text fg={theme.fgFaint}>try:</text>
+                {suggestions.map((s) => (
+                  <text key={s} fg={theme.goldDim}>{`  › ${s}`}</text>
+                ))}
+              </box>
+            ) : null}
+            <text fg={theme.fgFaint}>{"\n/council <q> · /score · /audit · /clear · /help"}</text>
           </box>
         ) : (
           msgs.map((m) => <MessageRow key={m.id} msg={m} />)

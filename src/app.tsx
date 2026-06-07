@@ -23,7 +23,7 @@ import {
 import { HistoryView, type ManifestEdit, ManifestView, ScoreView, StateView } from "./panes.tsx";
 import { Header, Sidebar } from "./sidebar.tsx";
 import { theme } from "./theme.ts";
-import { type DomainDocs, readDomainDocs } from "./vault.ts";
+import { type DomainDocs, readDomainDocs, readDomainPrompts } from "./vault.ts";
 
 type Tab = "chat" | "state" | "score" | "manifest" | "history";
 const TABS: Tab[] = ["chat", "state", "score", "manifest", "history"];
@@ -100,6 +100,7 @@ export function App({
   const [manifests, setManifests] = useState<Record<string, DomainManifest>>({});
   const [histories, setHistories] = useState<Record<string, ScoreHistory>>({});
   const [docs, setDocs] = useState<Record<string, DomainDocs>>({});
+  const [prompts, setPrompts] = useState<Record<string, string[]>>({});
   const [auditing, setAuditing] = useState<Set<string>>(new Set());
 
   // manifest editing
@@ -115,6 +116,21 @@ export function App({
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // ── starter prompts for the empty chat (cheap; load per domain on select) ─────
+  useEffect(() => {
+    if (!domain || prompts[domain.name]) return;
+    const name = domain.name;
+    let cancelled = false;
+    readDomainPrompts(domain.path)
+      .then((p) => {
+        if (!cancelled) setPrompts((m) => ({ ...m, [name]: p }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [domain, prompts]);
 
   // ── lazy-load the data the active tab needs for the active domain ─────────────
   useEffect(() => {
@@ -534,6 +550,7 @@ export function App({
               msgs={msgs}
               busy={busy}
               engineLabel={engineLabel(cliByDomain[domain.name])}
+              suggestions={prompts[domain.name] ?? []}
               inputRef={chatInputRef}
               inputFocused={focus === "chat"}
               onSubmit={submitChat}

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readDomainDoc, readDomainDocs } from "./vault.ts";
+import { readDomainDoc, readDomainDocs, readDomainPrompts } from "./vault.ts";
 
 const dirs: string[] = [];
 async function domainDir(files: Record<string, string>): Promise<string> {
@@ -50,5 +50,31 @@ describe("readDomainDocs", () => {
   test("reads state + open-loops together", async () => {
     const dir = await domainDir({ "state.md": "S", "open-loops.md": "O" });
     expect(await readDomainDocs(dir)).toEqual({ state: "S", openloops: "O" });
+  });
+});
+
+describe("readDomainPrompts", () => {
+  const PROMPTS = [
+    "# Title",
+    "## Section",
+    '1. **Morning Brief:** "do the thing"',
+    '2. **Top 3:** "another"',
+    "- not a numbered entry",
+    '3. **Third One:** "x"',
+  ].join("\n");
+
+  test("lifts the bold title before the colon, honoring the limit", async () => {
+    const dir = await domainDir({ "PROMPTS.md": PROMPTS });
+    expect(await readDomainPrompts(dir, 2)).toEqual(["Morning Brief", "Top 3"]);
+  });
+
+  test("returns all matches under the limit", async () => {
+    const dir = await domainDir({ "PROMPTS.md": PROMPTS });
+    expect(await readDomainPrompts(dir, 10)).toEqual(["Morning Brief", "Top 3", "Third One"]);
+  });
+
+  test("[] when there is no PROMPTS.md", async () => {
+    const dir = await domainDir({ "state.md": "x" });
+    expect(await readDomainPrompts(dir)).toEqual([]);
   });
 });

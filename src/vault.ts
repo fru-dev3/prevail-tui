@@ -49,3 +49,26 @@ export async function readDomainDocs(domainPath: string): Promise<DomainDocs> {
   ]);
   return { state, openloops };
 }
+
+/**
+ * Pull a few starter-prompt titles from PROMPTS.md to seed an empty chat.
+ * Entries look like `1. **Morning Daily Brief:** "…"`, so we lift the bold
+ * label before the colon. Returns [] if there's no PROMPTS.md.
+ */
+export async function readDomainPrompts(domainPath: string, limit = 4): Promise<string[]> {
+  let text: string;
+  try {
+    text = await readFile(join(domainPath, "PROMPTS.md"), "utf8");
+  } catch {
+    return [];
+  }
+  const titles: string[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*\d+\.\s+\*\*(.+?):\*\*/);
+    if (m) {
+      titles.push(m[1].trim());
+      if (titles.length >= limit) break;
+    }
+  }
+  return titles;
+}
