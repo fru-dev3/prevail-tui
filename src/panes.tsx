@@ -21,7 +21,9 @@ import {
   severityGlyph,
   sparkline,
 } from "./format.ts";
+import { Markdown } from "./markdown.tsx";
 import { theme } from "./theme.ts";
+import type { DomainDocs } from "./vault.ts";
 
 // Pretty labels for the six frozen dimensions (object key → display).
 const DIM_LABEL: Record<string, string> = {
@@ -145,6 +147,31 @@ function MissingBlock({ missing }: { missing: MissingItem[] }) {
       ))}
       <text> </text>
     </box>
+  );
+}
+
+// ── State (read-only vault markdown) ─────────────────────────────────────────
+export function StateView({ docs }: { docs: DomainDocs | undefined }) {
+  if (!docs) return <Loading what="state" />;
+  if (!docs.state && !docs.openloops) {
+    return (
+      <box paddingLeft={1} paddingTop={1}>
+        <text fg={theme.fgDim}>No state.md for this domain yet.</text>
+      </box>
+    );
+  }
+  return (
+    <scrollbox flexGrow={1} paddingLeft={1} paddingRight={1}>
+      {docs.state ? <Markdown content={docs.state} /> : null}
+      {docs.openloops ? (
+        <box flexDirection="column" paddingTop={1}>
+          <text fg={theme.gold} attributes={1}>
+            OPEN LOOPS
+          </text>
+          <Markdown content={docs.openloops} />
+        </box>
+      ) : null}
+    </scrollbox>
   );
 }
 

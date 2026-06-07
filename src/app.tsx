@@ -19,12 +19,13 @@ import {
   setManifest,
   streamChat,
 } from "./engine.ts";
-import { HistoryView, type ManifestEdit, ManifestView, ScoreView } from "./panes.tsx";
+import { HistoryView, type ManifestEdit, ManifestView, ScoreView, StateView } from "./panes.tsx";
 import { Header, Sidebar } from "./sidebar.tsx";
 import { theme } from "./theme.ts";
+import { type DomainDocs, readDomainDocs } from "./vault.ts";
 
-type Tab = "chat" | "score" | "manifest" | "history";
-const TABS: Tab[] = ["chat", "score", "manifest", "history"];
+type Tab = "chat" | "state" | "score" | "manifest" | "history";
+const TABS: Tab[] = ["chat", "state", "score", "manifest", "history"];
 type Focus = "sidebar" | "chat" | "manifest-edit";
 
 // A small default panel for /council — fanned out client-side (see council.ts);
@@ -38,6 +39,7 @@ const DEFAULT_CHAIR = { cli: "claude" as const };
 
 const SLASH_HELP = [
   "/council <q>   fan the question out to the panel + chair synthesis",
+  "/state         jump to the state tab (read-only vault markdown)",
   "/score         jump to the score tab",
   "/audit         run a fresh LLM audit of this domain",
   "/manifest      jump to the manifest tab",
@@ -86,6 +88,7 @@ export function App({
   );
   const [manifests, setManifests] = useState<Record<string, DomainManifest>>({});
   const [histories, setHistories] = useState<Record<string, ScoreHistory>>({});
+  const [docs, setDocs] = useState<Record<string, DomainDocs>>({});
   const [auditing, setAuditing] = useState<Set<string>>(new Set());
 
   // manifest editing
@@ -109,7 +112,10 @@ export function App({
     let cancelled = false;
     (async () => {
       try {
-        if (tab === "score" && !scores[name]) {
+        if (tab === "state" && !docs[name]) {
+          const d = await readDomainDocs(domain.path);
+          if (!cancelled) setDocs((m) => ({ ...m, [name]: d }));
+        } else if (tab === "score" && !scores[name]) {
           const s = await scoreDomain(name, false, opts);
           if (!cancelled) {
             setScores((m) => ({ ...m, [name]: s }));
@@ -129,7 +135,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [domain, tab, scores, manifests, histories, opts]);
+  }, [domain, tab, scores, manifests, histories, docs, opts]);
 
   // ── chat helpers ──────────────────────────────────────────────────────────────
   const pushMsg = (name: string, msg: ChatMsg) =>
@@ -288,6 +294,9 @@ export function App({
             sendCouncil(name, arg).finally(() => setBusy(false));
           }
           return;
+        case "state":
+          setTab("state");
+          return;
         case "score":
           setTab("score");
           return;
@@ -386,6 +395,7 @@ export function App({
       case "2":
       case "3":
       case "4":
+      case "5":
         setTab(TABS[Number(name) - 1]);
         break;
       case "i":
@@ -417,6 +427,11 @@ export function App({
             return n;
           });
           setHistories((m) => {
+            const n = { ...m };
+            delete n[domain.name];
+            return n;
+          });
+          setDocs((m) => {
             const n = { ...m };
             delete n[domain.name];
             return n;
@@ -478,6 +493,8 @@ export function App({
               inputFocused={focus === "chat"}
               onSubmit={submitChat}
             />
+          ) : tab === "state" ? (
+            <StateView docs={docs[domain.name]} />
           ) : tab === "score" ? (
             <ScoreView score={scores[domain.name]} auditing={auditing.has(domain.name)} />
           ) : tab === "manifest" ? (
@@ -517,7 +534,7 @@ function Footer({ focus, tab }: { focus: Focus; tab: Tab }) {
   else if (tab === "score") hint = "↑/↓ domain · ←/→ tab · a audit · i chat · r refresh · q quit";
   else if (tab === "manifest")
     hint = "↑/↓ domain · ←/→ tab · e label · m summary · i chat · q quit";
-  else hint = "↑/↓ domain · ←/→ tab (1-4) · i/⏎ chat · r refresh · q quit";
+  else hint = "↑/↓ domain · ←/→ tab (1-5) · i/⏎ chat · r refresh · q quit";
   return (
     <box paddingLeft={1}>
       <text fg={theme.fgFaint}>{hint}</text>
