@@ -97,6 +97,9 @@ export function App({
   const [framework, setFramework] = useState<FrameworkId | null>(null);
   const [lens, setLens] = useState<LensSelection>(null);
   const [webOn, setWebOn] = useState(true);
+  const [saveOn, setSaveOn] = useState(true);
+  const [serendipityOn, setSerendipityOn] = useState(false);
+  const [auto, setAuto] = useState<"OFF" | "SUGGEST" | "AUTO">("OFF");
   const [cliHealth, setCliHealth] = useState<CliHealth[]>([]);
 
   // chat
@@ -166,6 +169,8 @@ export function App({
       const next = ids[ids.indexOf(cur as (typeof ids)[number]) + 1];
       return next ?? null;
     });
+  const cycleAuto = () =>
+    setAuto((a) => (a === "OFF" ? "SUGGEST" : a === "SUGGEST" ? "AUTO" : "OFF"));
 
   // ── starter prompts for the empty chat (cheap; load per domain on select) ─────
   useEffect(() => {
@@ -608,7 +613,11 @@ export function App({
               : ""
           }
         >
-          <TabStrip tab={tab} />
+          <TabStrip
+            tab={tab}
+            cliHealth={cliHealth}
+            activeCli={cliByDomain[domain?.name ?? ""]?.cli ?? "claude"}
+          />
           {!domain ? (
             <box paddingLeft={1} paddingTop={1}>
               <text fg={theme.fgDim}>No domains.</text>
@@ -620,6 +629,22 @@ export function App({
               busy={busy}
               engineLabel={engineLabel(cliByDomain[domain.name])}
               suggestions={prompts[domain.name] ?? []}
+              controls={{
+                councilOn,
+                framework,
+                lens,
+                webOn,
+                saveOn,
+                serendipityOn,
+                auto,
+                onToggleCouncil: () => setCouncilOn((c) => !c),
+                onCycleFramework: cycleFramework,
+                onCycleLens: cycleLens,
+                onToggleWeb: () => setWebOn((w) => !w),
+                onToggleSave: () => setSaveOn((s) => !s),
+                onToggleSerendipity: () => setSerendipityOn((s) => !s),
+                onCycleAuto: cycleAuto,
+              }}
               inputRef={chatInputRef}
               inputFocused={focus === "chat"}
               onSubmit={submitChat}
@@ -646,14 +671,38 @@ export function App({
   );
 }
 
-function TabStrip({ tab }: { tab: Tab }) {
+function TabStrip({
+  tab,
+  cliHealth,
+  activeCli,
+}: {
+  tab: Tab;
+  cliHealth: CliHealth[];
+  activeCli: string;
+}) {
   return (
-    <box flexDirection="row" paddingLeft={1}>
+    <box flexDirection="row" paddingLeft={1} paddingRight={1}>
       {TABS.map((t, i) => (
         <text key={t} fg={t === tab ? theme.gold : theme.fgFaint} attributes={t === tab ? 1 : 0}>
           {`${i > 0 ? "  " : ""}${t === tab ? "[" : " "}${t}${t === tab ? "]" : " "}`}
         </text>
       ))}
+      <box flexGrow={1} />
+      {/* CLI chips: health glyph + name; the active engine is marked ▸ */}
+      {cliHealth.map((h) => {
+        const on = h.ok === true;
+        const isActive = h.kind === activeCli;
+        const glyph = on ? "✓" : h.ok === false ? "⚠" : "·";
+        const color = on ? theme.ok : h.ok === false ? theme.warn : theme.fgDim;
+        return (
+          <box key={h.kind} flexDirection="row" paddingLeft={1}>
+            <text fg={color}>{`${glyph} `}</text>
+            <text fg={isActive ? theme.gold : theme.fgDim} attributes={isActive ? 1 : 0}>
+              {`${isActive ? "▸" : ""}${h.label}`}
+            </text>
+          </box>
+        );
+      })}
     </box>
   );
 }
