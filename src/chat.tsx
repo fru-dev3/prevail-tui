@@ -73,10 +73,17 @@ export function MessageRow({ msg }: { msg: ChatMsg }) {
 }
 
 // Boxed starter-prompt cards, like the cockpit's "try one to get started".
-function SuggestionCards({ suggestions }: { suggestions: string[] }) {
+// Clicking a card sends it.
+function SuggestionCards({
+  suggestions,
+  onPick,
+}: {
+  suggestions: string[];
+  onPick: (s: string) => void;
+}) {
   return (
     <box flexDirection="column" paddingTop={1}>
-      <text fg={theme.fgFaint}>try one to get started · clicks tune future suggestions</text>
+      <text fg={theme.fgFaint}>try one to get started · click a card to send it</text>
       <text> </text>
       {suggestions.map((s) => (
         <box
@@ -86,6 +93,7 @@ function SuggestionCards({ suggestions }: { suggestions: string[] }) {
           borderColor={theme.border}
           paddingLeft={1}
           paddingRight={1}
+          onMouseDown={() => onPick(s)}
         >
           <text fg={theme.gold}>{"▸ "}</text>
           <text fg={theme.fg}>{s}</text>
@@ -150,6 +158,8 @@ export function ChatView({
   inputRef,
   inputFocused,
   onSubmit,
+  onPickSuggestion,
+  onFocusChat,
 }: {
   domain: DomainSummary;
   msgs: ChatMsg[];
@@ -162,15 +172,17 @@ export function ChatView({
   inputRef: React.RefObject<unknown>;
   inputFocused: boolean;
   onSubmit: (value: string) => void;
+  onPickSuggestion: (s: string) => void;
+  onFocusChat: () => void;
 }) {
   const turns = msgs.filter((m) => m.role === "user").length;
   return (
     <box flexDirection="column" flexGrow={1}>
-      <scrollbox flexGrow={1} paddingLeft={1} paddingRight={1}>
+      <scrollbox flexGrow={1} paddingLeft={1} paddingRight={1} onMouseDown={onFocusChat}>
         {msgs.length === 0 ? (
           <box flexDirection="column" paddingTop={1}>
             {suggestions.length > 0 ? (
-              <SuggestionCards suggestions={suggestions} />
+              <SuggestionCards suggestions={suggestions} onPick={onPickSuggestion} />
             ) : (
               <text fg={theme.fgDim}>{`Ask ${domain.label ?? domain.name} anything.`}</text>
             )}
@@ -198,6 +210,7 @@ export function ChatView({
         borderColor={inputFocused ? theme.borderFocus : theme.inputBorder}
         paddingLeft={1}
         paddingRight={1}
+        onMouseDown={onFocusChat}
       >
         <text fg={theme.gold}>{busy ? "… " : "› "}</text>
         <input

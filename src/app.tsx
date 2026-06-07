@@ -507,12 +507,10 @@ export function App({
         setDomainIdx(domains.length - 1);
         break;
       case "right":
-      case "l":
       case "tab":
         setTab((t) => TABS[(TABS.indexOf(t) + 1) % TABS.length]);
         break;
       case "left":
-      case "h":
         setTab((t) => TABS[(TABS.indexOf(t) + TABS.length - 1) % TABS.length]);
         break;
       case "1":
@@ -598,6 +596,10 @@ export function App({
           focused={focus === "sidebar"}
           scores={badges}
           streaming={streaming}
+          onSelect={(i) => {
+            setDomainIdx(i);
+            setFocus("sidebar");
+          }}
         />
 
         {/* detail pane */}
@@ -617,6 +619,17 @@ export function App({
             tab={tab}
             cliHealth={cliHealth}
             activeCli={cliByDomain[domain?.name ?? ""]?.cli ?? "claude"}
+            onSelectTab={(t) => {
+              setTab(t);
+              setFocus(t === "chat" ? "chat" : "sidebar");
+            }}
+            onSelectCli={(kind) => {
+              if (!domain) return;
+              setCliByDomain((m) => ({
+                ...m,
+                [domain.name]: { ...(m[domain.name] ?? {}), cli: kind },
+              }));
+            }}
           />
           {!domain ? (
             <box paddingLeft={1} paddingTop={1}>
@@ -648,6 +661,11 @@ export function App({
               inputRef={chatInputRef}
               inputFocused={focus === "chat"}
               onSubmit={submitChat}
+              onFocusChat={() => setFocus("chat")}
+              onPickSuggestion={(s) => {
+                setFocus("chat");
+                submitChat(s);
+              }}
             />
           ) : tab === "state" ? (
             <StateView docs={docs[domain.name]} />
@@ -675,27 +693,38 @@ function TabStrip({
   tab,
   cliHealth,
   activeCli,
+  onSelectTab,
+  onSelectCli,
 }: {
   tab: Tab;
   cliHealth: CliHealth[];
   activeCli: string;
+  onSelectTab: (t: Tab) => void;
+  onSelectCli: (kind: CliKind) => void;
 }) {
   return (
     <box flexDirection="row" paddingLeft={1} paddingRight={1}>
       {TABS.map((t, i) => (
-        <text key={t} fg={t === tab ? theme.gold : theme.fgFaint} attributes={t === tab ? 1 : 0}>
-          {`${i > 0 ? "  " : ""}${t === tab ? "[" : " "}${t}${t === tab ? "]" : " "}`}
-        </text>
+        <box key={t} onMouseDown={() => onSelectTab(t)}>
+          <text fg={t === tab ? theme.gold : theme.fgDim} attributes={t === tab ? 1 : 0}>
+            {`${i > 0 ? "  " : ""}${t === tab ? "[" : " "}${t}${t === tab ? "]" : " "}`}
+          </text>
+        </box>
       ))}
       <box flexGrow={1} />
-      {/* CLI chips: health glyph + name; the active engine is marked ▸ */}
+      {/* CLI chips: health glyph + name; the active engine is marked ▸. Click to switch. */}
       {cliHealth.map((h) => {
         const on = h.ok === true;
         const isActive = h.kind === activeCli;
         const glyph = on ? "✓" : h.ok === false ? "⚠" : "·";
         const color = on ? theme.ok : h.ok === false ? theme.warn : theme.fgDim;
         return (
-          <box key={h.kind} flexDirection="row" paddingLeft={1}>
+          <box
+            key={h.kind}
+            flexDirection="row"
+            paddingLeft={1}
+            onMouseDown={() => onSelectCli(h.kind as CliKind)}
+          >
             <text fg={color}>{`${glyph} `}</text>
             <text fg={isActive ? theme.gold : theme.fgDim} attributes={isActive ? 1 : 0}>
               {`${isActive ? "▸" : ""}${h.label}`}

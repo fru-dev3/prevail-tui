@@ -1,62 +1,12 @@
 /**
- * Header banner + life-domains sidebar. Both are pure renders driven by props
- * from app.tsx: the score map comes from `score --all`, open-loop counts from
- * the domains listing, and the live clock from a timestamp the app ticks.
+ * Life-domains sidebar — a pure render driven by props from app.tsx: the score
+ * map comes from `score --all`, open-loop counts from the domains listing.
+ * Rows are clickable (onSelect) and carry a labeled column header so the two
+ * numbers (readiness score · open loops) are self-explanatory.
  */
 import type { DomainSummary } from "./contract.ts";
-import { scoreColor, shortenPath } from "./format.ts";
+import { scoreColor } from "./format.ts";
 import { theme } from "./theme.ts";
-
-function formatClock(now: number): string {
-  const d = new Date(now);
-  const days = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
-  const mons = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${days[d.getDay()]} ${mons[d.getMonth()]} ${d.getDate()} · ${hh}:${mm}`;
-}
-
-export function Header({
-  vaultPath,
-  lifeReadiness,
-  domainCount,
-  openLoops,
-  now,
-}: {
-  vaultPath: string;
-  lifeReadiness: number | null;
-  domainCount: number;
-  openLoops: number;
-  now: number;
-}) {
-  return (
-    <box flexDirection="row" paddingLeft={1} paddingRight={1}>
-      {/* wordmark */}
-      <text fg={theme.ai} attributes={1}>
-        prev
-      </text>
-      <text fg={theme.gold} attributes={1}>
-        AI
-      </text>
-      <text fg={theme.ai} attributes={1}>
-        l
-      </text>
-      <text fg={theme.fgFaint}>{`  · ${formatClock(now)}  ·  `}</text>
-      {/* life readiness */}
-      <text fg={theme.fgDim}>life </text>
-      {lifeReadiness === null ? (
-        <text fg={theme.fgFaint}>··</text>
-      ) : (
-        <text fg={scoreColor(lifeReadiness)} attributes={1}>
-          {String(lifeReadiness)}
-        </text>
-      )}
-      <text fg={theme.fgFaint}>{`  ·  ${domainCount}d`}</text>
-      <text fg={openLoops > 0 ? theme.warn : theme.fgFaint}>{` ${openLoops}o`}</text>
-      <text fg={theme.fgFaint}>{`  ·  ${shortenPath(vaultPath)}`}</text>
-    </box>
-  );
-}
 
 export function Sidebar({
   domains,
@@ -64,12 +14,14 @@ export function Sidebar({
   focused,
   scores,
   streaming,
+  onSelect,
 }: {
   domains: DomainSummary[];
   domainIdx: number;
   focused: boolean;
   scores: Record<string, number | undefined>;
   streaming: Set<string>;
+  onSelect: (i: number) => void;
 }) {
   return (
     <box
@@ -80,47 +32,46 @@ export function Sidebar({
       backgroundColor={theme.bgPanel}
       bottomTitle=" LIFE DOMAINS "
     >
+      {/* column header so the two numbers are legible */}
+      <box flexDirection="row" backgroundColor={theme.bgPanel}>
+        <text fg={theme.fgFaint} bg={theme.bgPanel}>
+          {"   domain         scr  ◌"}
+        </text>
+      </box>
       {domains.map((d, i) => {
         const active = i === domainIdx;
         const score = scores[d.name];
+        const bg = active ? theme.selBg : theme.bgPanel;
         const glyph = streaming.has(d.name) ? "◉" : d.emoji ? d.emoji : "◆";
         return (
           <box
             key={d.name}
             flexDirection="row"
-            backgroundColor={active ? theme.selBg : theme.bgPanel}
+            backgroundColor={bg}
+            onMouseDown={() => onSelect(i)}
           >
-            <text
-              fg={active ? theme.gold : theme.fgFaint}
-              bg={active ? theme.selBg : theme.bgPanel}
-            >
+            <text fg={active ? theme.gold : theme.fgFaint} bg={bg}>
               {active ? "› " : "  "}
             </text>
-            <text
-              fg={streaming.has(d.name) ? theme.gold : active ? theme.selFg : theme.fg}
-              bg={active ? theme.selBg : theme.bgPanel}
-            >
+            <text fg={streaming.has(d.name) ? theme.gold : active ? theme.selFg : theme.fg} bg={bg}>
               {`${glyph} `}
             </text>
-            <text fg={active ? theme.selFg : theme.fg} bg={active ? theme.selBg : theme.bgPanel}>
-              {(d.label ?? d.name).padEnd(15).slice(0, 15)}
+            <text fg={active ? theme.selFg : theme.fg} bg={bg}>
+              {(d.label ?? d.name).padEnd(13).slice(0, 13)}
             </text>
-            {/* score badge */}
+            {/* readiness score */}
             {score === undefined ? (
-              <text fg={theme.fgFaint} bg={active ? theme.selBg : theme.bgPanel}>
+              <text fg={theme.fgFaint} bg={bg}>
                 {" ··"}
               </text>
             ) : (
-              <text fg={scoreColor(score)} bg={active ? theme.selBg : theme.bgPanel}>
+              <text fg={scoreColor(score)} bg={bg}>
                 {String(score).padStart(3)}
               </text>
             )}
             {/* open loops */}
-            <text
-              fg={d.openLoopCount > 0 ? theme.warn : theme.fgFaint}
-              bg={active ? theme.selBg : theme.bgPanel}
-            >
-              {d.openLoopCount > 0 ? ` ${d.openLoopCount}○` : "   "}
+            <text fg={d.openLoopCount > 0 ? theme.warn : theme.fgFaint} bg={bg}>
+              {d.openLoopCount > 0 ? ` ${String(d.openLoopCount).padStart(2)}` : "   "}
             </text>
           </box>
         );
