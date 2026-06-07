@@ -5,3 +5,5 @@ dist/
 .env
 .env.*
 bun.lockb
+*.bun-build
+.*.bun-build

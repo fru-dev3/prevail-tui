@@ -1,7 +1,7 @@
-// prevAIl brand palette (mirrors the cockpit). Gold #C4A35A is the brand.
+// prevAIl brand palette (mirrors the cockpit). The accent reads yellow here.
 export const theme = {
-  gold: "#C4A35A",
-  goldBright: "#F5E0A8",
+  gold: "#E6C229",
+  goldBright: "#FFE680",
   ai: "#7AA2F7", // the "AI" blue
   bg: "#0A0A0C",
   bgPanel: "#161616",
@@ -11,7 +11,7 @@ export const theme = {
   selBg: "#2A2418",
   selFg: "#F2E2B6",
   border: "#3A3A3A",
-  borderFocus: "#C4A35A",
+  borderFocus: "#E6C229",
   ok: "#7BC47F",
   err: "#E06C75",
 } as const;

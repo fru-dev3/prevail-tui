@@ -18,10 +18,10 @@ import {
   type ContextScore,
   type DomainManifest,
   type DomainSummary,
-  isJsonError,
   type JsonError,
   type LifeScore,
   type ScoreHistory,
+  isJsonError,
 } from "./contract.ts";
 
 // ── Binary resolution ────────────────────────────────────────────────────────
@@ -97,11 +97,7 @@ export class EngineError extends Error {
 }
 
 /** Run a `--json` command that returns a single JSON value on stdout. */
-export async function runJson<T>(
-  args: string[],
-  opts?: EngineOpts,
-  stdin?: string,
-): Promise<T> {
+export async function runJson<T>(args: string[], opts?: EngineOpts, stdin?: string): Promise<T> {
   const proc = Bun.spawn([resolvePrevailBin(), ...baseArgs(opts, args)], {
     stdin: stdin !== undefined ? new TextEncoder().encode(stdin) : "ignore",
     stdout: "pipe",
@@ -116,10 +112,7 @@ export async function runJson<T>(
   ]);
   const trimmed = out.trim();
   if (!trimmed) {
-    throw new EngineError(
-      err.trim() || `prevail exited ${code} with no output`,
-      "NO_OUTPUT",
-    );
+    throw new EngineError(err.trim() || `prevail exited ${code} with no output`, "NO_OUTPUT");
   }
   let parsed: unknown;
   try {

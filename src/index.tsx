@@ -84,9 +84,7 @@ async function main() {
       die(`Engine error (${err.code}): ${err.message}`);
     }
     die(
-      `Could not run the prevail engine ("${resolvePrevailBin()}").\n` +
-        "Install it (see fd-apps-prevail-cli) and ensure it is on PATH.\n" +
-        `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+      `Could not run the prevail engine ("${resolvePrevailBin()}").\nInstall it (see fd-apps-prevail-cli) and ensure it is on PATH.\nUnderlying error: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

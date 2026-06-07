@@ -97,7 +97,9 @@ async function runPanelist(
 function buildChairPrompt(question: string, panel: PanelReply[]): string {
   const blocks = panel
     .filter((r) => r.ok && r.text.trim())
-    .map((r, i) => `### Panelist ${i + 1} — ${r.cli}${r.model ? `:${r.model}` : ""}\n${r.text.trim()}`)
+    .map(
+      (r, i) => `### Panelist ${i + 1} — ${r.cli}${r.model ? `:${r.model}` : ""}\n${r.text.trim()}`,
+    )
     .join("\n\n");
   return [
     "You are the chair of a council. Below are independent answers from several",
@@ -111,14 +113,9 @@ function buildChairPrompt(question: string, panel: PanelReply[]): string {
   ].join("\n");
 }
 
-export async function runCouncil(
-  args: CouncilArgs,
-  opts?: EngineOpts,
-): Promise<CouncilResult> {
+export async function runCouncil(args: CouncilArgs, opts?: EngineOpts): Promise<CouncilResult> {
   // 1. Fan out — every panelist answers the same prompt in parallel.
-  const panel = await Promise.all(
-    args.panelists.map((p, i) => runPanelist(args, p, i, opts)),
-  );
+  const panel = await Promise.all(args.panelists.map((p, i) => runPanelist(args, p, i, opts)));
 
   const answered = panel.filter((r) => r.ok && r.text.trim());
   const degraded = answered.length < args.panelists.length;

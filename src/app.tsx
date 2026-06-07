@@ -39,9 +39,11 @@ export function App({
   const [busy, setBusy] = useState(false);
   const [msgsByDomain, setMsgs] = useState<Record<string, ChatMsg[]>>({});
   const sessions = useRef<Record<string, string>>({});
-  const inputRef = useRef<{ value?: string; setText?: (s: string) => void; focus?: () => void } | null>(
-    null,
-  );
+  const inputRef = useRef<{
+    value?: string;
+    setText?: (s: string) => void;
+    focus?: () => void;
+  } | null>(null);
 
   const domain = domains[domainIdx];
   const opts: EngineOpts = { vault: vaultPath };
@@ -78,12 +80,11 @@ export function App({
         setMsgs((m) => ({
           ...m,
           [name]: (m[name] ?? []).map((x) =>
-            x.id === aid
-              ? { ...x, cli: e.engine, text: x.text || finalText || x.text }
-              : x,
+            x.id === aid ? { ...x, cli: e.engine, text: x.text || finalText || x.text } : x,
           ),
         }));
-      } else if (e.type === "error" && e.error) patchMsg(name, aid, { text: `⚠ ${e.error}`, cli: "error" });
+      } else if (e.type === "error" && e.error)
+        patchMsg(name, aid, { text: `⚠ ${e.error}`, cli: "error" });
     };
     try {
       await streamChat(
@@ -117,9 +118,7 @@ export function App({
         },
         opts,
       );
-      const panelLine = result.panel
-        .map((p) => `${p.ok ? "✓" : "✗"} ${p.cli}`)
-        .join("  ");
+      const panelLine = result.panel.map((p) => `${p.ok ? "✓" : "✗"} ${p.cli}`).join("  ");
       patchMsg(name, cid, {
         text: `${result.verdict || "(no verdict)"}\n\n— panel: ${panelLine}${result.degraded ? " (degraded)" : ""}`,
       });
@@ -160,7 +159,7 @@ export function App({
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={theme.bg}>
       {/* header */}
-      <box paddingLeft={1} paddingRight={1}>
+      <box flexDirection="row" paddingLeft={1} paddingRight={1}>
         <text fg={theme.ai} attributes={1}>
           prev
         </text>
@@ -170,7 +169,7 @@ export function App({
         <text fg={theme.ai} attributes={1}>
           l
         </text>
-        <text fg={theme.fgFaint}>  · tui · {shorten(vaultPath)}</text>
+        <text fg={theme.fgFaint}> · tui · {shorten(vaultPath)}</text>
       </box>
 
       <box flexDirection="row" flexGrow={1}>
@@ -228,9 +227,7 @@ export function App({
 
       {/* footer */}
       <box paddingLeft={1}>
-        <text fg={theme.fgFaint}>
-          ↑/↓ domain · tab/i chat · esc back · /council · ctrl+c quit
-        </text>
+        <text fg={theme.fgFaint}>↑/↓ domain · tab/i chat · esc back · /council · ctrl+c quit</text>
       </box>
     </box>
   );
