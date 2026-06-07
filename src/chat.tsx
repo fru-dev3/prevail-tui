@@ -4,6 +4,7 @@
  * seam. Council replies render as a distinct gold-tagged role.
  */
 import type { DomainSummary } from "./contract.ts";
+import { Markdown } from "./markdown.tsx";
 import { theme } from "./theme.ts";
 
 export type Role = "user" | "assistant" | "system" | "council";
@@ -30,6 +31,11 @@ export function MessageRow({ msg }: { msg: ChatMsg }) {
               color: theme.assistant,
               prefix: "▸ ",
             };
+  // Render engine replies (assistant/council) as markdown; keep the user's own
+  // text, system notes, and errors literal.
+  const isError = msg.cli === "error";
+  const asMarkdown =
+    !isError && (msg.role === "assistant" || msg.role === "council") && msg.text.length > 0;
   return (
     <box flexDirection="column" paddingTop={1}>
       <text fg={tag.color} attributes={1}>
@@ -37,7 +43,11 @@ export function MessageRow({ msg }: { msg: ChatMsg }) {
         {tag.label}
         {msg.streaming ? " ▌" : ""}
       </text>
-      <text fg={msg.cli === "error" ? theme.err : theme.fg}>{msg.text}</text>
+      {asMarkdown ? (
+        <Markdown content={msg.text} />
+      ) : (
+        <text fg={isError ? theme.err : theme.fg}>{msg.text}</text>
+      )}
     </box>
   );
 }
