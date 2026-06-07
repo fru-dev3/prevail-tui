@@ -1,0 +1,32 @@
+{
+  "name": "prevail-tui",
+  "version": "0.1.0",
+  "description": "prevAIl TUI — a terminal cockpit that drives the prevail engine through its --json/NDJSON contract (thin subprocess client, same architecture as the desktop app).",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "prevail-tui": "./src/index.tsx"
+  },
+  "scripts": {
+    "dev": "bun run src/index.tsx",
+    "start": "bun run src/index.tsx",
+    "build": "bun build --compile --outfile=dist/prevail-tui src/index.tsx",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "format": "biome format --write src"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.3.0",
+    "@opentui/react": "^0.3.0",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.3.14",
+    "@types/react": "^19.2.0",
+    "typescript": "^5.7.0"
+  }
+}
