@@ -26,6 +26,7 @@ import {
 import { scoreColor, shortenPath } from "./format.ts";
 import { FRAMEWORKS, type FrameworkId, buildFrameworkPreamble, getFramework } from "./framework.ts";
 import { LENSES, type LensSelection, buildLensPreamble, getLens } from "./lens.ts";
+import { Overlay } from "./overlay.tsx";
 import { HistoryView, type ManifestEdit, ManifestView, ScoreView, StateView } from "./panes.tsx";
 import { Sidebar } from "./sidebar.tsx";
 import { theme } from "./theme.ts";
@@ -34,15 +35,6 @@ import { type DomainDocs, readDomainDocs, readDomainPrompts } from "./vault.ts";
 type Tab = "chat" | "state" | "score" | "manifest" | "history";
 const TABS: Tab[] = ["chat", "state", "score", "manifest", "history"];
 type Focus = "sidebar" | "chat" | "manifest-edit";
-
-// A small default panel for /council — fanned out client-side (see council.ts);
-// panelists that aren't installed simply degrade out.
-const DEFAULT_PANEL = [
-  { cli: "claude" as const },
-  { cli: "codex" as const },
-  { cli: "gemini" as const },
-];
-const DEFAULT_CHAIR = { cli: "claude" as const };
 
 const CLI_KINDS: CliKind[] = ["claude", "codex", "antigravity", "gemini", "ollama"];
 
@@ -101,6 +93,12 @@ export function App({
   const [serendipityOn, setSerendipityOn] = useState(false);
   const [auto, setAuto] = useState<"OFF" | "SUGGEST" | "AUTO">("OFF");
   const [cliHealth, setCliHealth] = useState<CliHealth[]>([]);
+
+  // council composition — null = auto (every healthy CLI); a list overrides it.
+  const [councilClis, setCouncilClis] = useState<CliKind[] | null>(null);
+  const [councilChair, setCouncilChair] = useState<CliKind | null>(null);
+  // which heavy panel is open as an overlay (configure / bench / tools), if any.
+  const [overlay, setOverlay] = useState<"configure" | "bench" | "tools" | null>(null);
 
   // chat
   const [msgsByDomain, setMsgs] = useState<Record<string, ChatMsg[]>>({});
@@ -286,34 +284,78 @@ export function App({
     }
   }
 
+  // The council panel: an explicit override, else every healthy CLI, else a
+  // claude+codex fallback. The chair is the override, else the first panelist.
+  function resolvePanel(): { panelists: { cli: CliKind }[]; chair: { cli: CliKind } } {
+    const healthy = cliHealth.filter((h) => h.ok).map((h) => h.kind as CliKind);
+    const base = councilClis ?? (healthy.length ? healthy : (["claude", "codex"] as CliKind[]));
+    const chairCli = councilChair ?? base[0] ?? "claude";
+    return { panelists: base.map((cli) => ({ cli })), chair: { cli: chairCli } };
+  }
+
   async function sendCouncil(name: string, prompt: string) {
-    pushMsg(name, { id: nextId++, role: "user", text: `/council ${prompt}` });
-    const cid = nextId++;
-    pushMsg(name, { id: cid, role: "council", text: "convening the panel…", streaming: true });
+    pushMsg(name, { id: nextId++, role: "user", text: prompt });
+    const { panelists, chair } = resolvePanel();
+    pushMsg(name, {
+      id: nextId++,
+      role: "system",
+      cli: "council",
+      text: `convening ${panelists.length} panelist${panelists.length === 1 ? "" : "s"} (${panelists
+        .map((p) => p.cli)
+        .join(", ")}) · chair ${chair.cli}`,
+    });
+    // one streaming bubble per panelist, then the chair's verdict bubble.
+    const panelIds = panelists.map(() => nextId++);
+    for (const [i, p] of panelists.entries()) {
+      pushMsg(name, {
+        id: panelIds[i],
+        role: "assistant",
+        cli: `panelist ${p.cli}`,
+        text: "",
+        streaming: true,
+      });
+    }
+    const vid = nextId++;
+    pushMsg(name, { id: vid, role: "council", text: "", streaming: true });
     markStreaming(name, true);
-    let verdict = "";
     try {
       const result = await runCouncil(
         {
           domain: name,
           prompt,
-          panelists: DEFAULT_PANEL,
-          chair: DEFAULT_CHAIR,
-          onVerdictChunk: (d) => {
-            verdict += d;
-            patchMsg(name, cid, { text: verdict });
-          },
+          panelists,
+          chair,
+          onPanelChunk: (idx, delta) => appendToMsg(name, panelIds[idx], delta),
+          onVerdictChunk: (delta) => appendToMsg(name, vid, delta),
         },
         opts,
       );
-      const panelLine = result.panel.map((p) => `${p.ok ? "✓" : "✗"} ${p.cli}`).join("  ");
-      patchMsg(name, cid, {
-        text: `${result.verdict || "(no verdict — every panelist failed)"}\n\n— panel: ${panelLine}${result.degraded ? " (degraded)" : ""}`,
-      });
+      // finalize each panelist bubble with its authoritative text + status.
+      for (const [i, p] of result.panel.entries()) {
+        if (p.ok) {
+          patchMsg(name, panelIds[i], {
+            text: p.text || "(empty)",
+            cli: `panelist ${p.cli} ✓`,
+            streaming: false,
+          });
+        } else {
+          patchMsg(name, panelIds[i], {
+            text: `(no response${p.error ? `: ${p.error}` : ""})`,
+            cli: "error",
+            streaming: false,
+          });
+        }
+      }
+      if (!result.verdict) {
+        patchMsg(name, vid, {
+          text: result.degraded ? "(panel degraded — no verdict)" : "(no verdict)",
+        });
+      }
     } catch (err) {
-      patchMsg(name, cid, { text: `⚠ ${errMsg(err)}`, cli: "error" });
+      patchMsg(name, vid, { text: `⚠ ${errMsg(err)}`, cli: "error" });
     } finally {
-      patchMsg(name, cid, { streaming: false });
+      for (const id of panelIds) patchMsg(name, id, { streaming: false });
+      patchMsg(name, vid, { streaming: false });
       markStreaming(name, false);
     }
   }
@@ -476,6 +518,11 @@ export function App({
       renderer?.destroy?.();
       process.exit(0);
     }
+    // An open overlay captures esc (close) and otherwise swallows keys.
+    if (overlay) {
+      if (name === "escape") setOverlay(null);
+      return;
+    }
     if (focus === "manifest-edit") {
       if (name === "escape") {
         setManifestEdit(null);
@@ -586,6 +633,9 @@ export function App({
         onCycleFramework={cycleFramework}
         onCycleLens={cycleLens}
         onToggleWeb={() => setWebOn((w) => !w)}
+        onConfigure={() => setOverlay("configure")}
+        onBench={() => setOverlay("bench")}
+        onTools={() => setOverlay("tools")}
         cliHealth={cliHealth}
       />
 
@@ -602,86 +652,109 @@ export function App({
           }}
         />
 
-        {/* detail pane */}
-        <box
-          flexDirection="column"
-          flexGrow={1}
-          border
-          borderColor={focus === "chat" ? theme.borderFocus : theme.border}
-          title={domain ? ` ${domain.label ?? domain.name} ` : " — "}
-          bottomTitle={
-            domain
-              ? ` updated ${domain.openLoopCount} open · ${domain.hasState ? "state ✓" : "no state"} `
-              : ""
-          }
-        >
-          <TabStrip
-            tab={tab}
+        {/* detail pane — or a heavy panel overlay */}
+        {overlay ? (
+          <Overlay
+            kind={overlay}
+            onClose={() => setOverlay(null)}
             cliHealth={cliHealth}
-            activeCli={cliByDomain[domain?.name ?? ""]?.cli ?? "claude"}
-            onSelectTab={(t) => {
-              setTab(t);
-              setFocus(t === "chat" ? "chat" : "sidebar");
-            }}
-            onSelectCli={(kind) => {
-              if (!domain) return;
-              setCliByDomain((m) => ({
-                ...m,
-                [domain.name]: { ...(m[domain.name] ?? {}), cli: kind },
-              }));
-            }}
+            panel={resolvePanel().panelists.map((p) => p.cli)}
+            chair={resolvePanel().chair.cli}
+            onTogglePanelist={(cli) =>
+              setCouncilClis((cur) => {
+                const base = cur ?? resolvePanel().panelists.map((p) => p.cli);
+                return base.includes(cli) ? base.filter((c) => c !== cli) : [...base, cli];
+              })
+            }
+            onSetChair={(cli) => setCouncilChair(cli)}
+            scores={domains.map((d) => ({ name: d.name, score: badges[d.name] }))}
+            lifeReadiness={lifeReadiness}
+            engineVer={engineVer}
+            vaultLabel={shortenPath(vaultPath)}
+            domainCount={domains.length}
+            appCount={appCount}
           />
-          {!domain ? (
-            <box paddingLeft={1} paddingTop={1}>
-              <text fg={theme.fgDim}>No domains.</text>
-            </box>
-          ) : tab === "chat" ? (
-            <ChatView
-              domain={domain}
-              msgs={msgs}
-              busy={busy}
-              engineLabel={engineLabel(cliByDomain[domain.name])}
-              suggestions={prompts[domain.name] ?? []}
-              controls={{
-                councilOn,
-                framework,
-                lens,
-                webOn,
-                saveOn,
-                serendipityOn,
-                auto,
-                onToggleCouncil: () => setCouncilOn((c) => !c),
-                onCycleFramework: cycleFramework,
-                onCycleLens: cycleLens,
-                onToggleWeb: () => setWebOn((w) => !w),
-                onToggleSave: () => setSaveOn((s) => !s),
-                onToggleSerendipity: () => setSerendipityOn((s) => !s),
-                onCycleAuto: cycleAuto,
+        ) : (
+          <box
+            flexDirection="column"
+            flexGrow={1}
+            border
+            borderColor={focus === "chat" ? theme.borderFocus : theme.border}
+            title={domain ? ` ${domain.label ?? domain.name} ` : " — "}
+            bottomTitle={
+              domain
+                ? ` updated ${domain.openLoopCount} open · ${domain.hasState ? "state ✓" : "no state"} `
+                : ""
+            }
+          >
+            <TabStrip
+              tab={tab}
+              cliHealth={cliHealth}
+              activeCli={cliByDomain[domain?.name ?? ""]?.cli ?? "claude"}
+              onSelectTab={(t) => {
+                setTab(t);
+                setFocus(t === "chat" ? "chat" : "sidebar");
               }}
-              inputRef={chatInputRef}
-              inputFocused={focus === "chat"}
-              onSubmit={submitChat}
-              onFocusChat={() => setFocus("chat")}
-              onPickSuggestion={(s) => {
-                setFocus("chat");
-                submitChat(s);
+              onSelectCli={(kind) => {
+                if (!domain) return;
+                setCliByDomain((m) => ({
+                  ...m,
+                  [domain.name]: { ...(m[domain.name] ?? {}), cli: kind },
+                }));
               }}
             />
-          ) : tab === "state" ? (
-            <StateView docs={docs[domain.name]} />
-          ) : tab === "score" ? (
-            <ScoreView score={scores[domain.name]} auditing={auditing.has(domain.name)} />
-          ) : tab === "manifest" ? (
-            <ManifestView
-              manifest={manifests[domain.name]}
-              editing={manifestEdit}
-              inputRef={manifestInputRef}
-              onSubmit={commitEdit}
-            />
-          ) : (
-            <HistoryView history={histories[domain.name]} />
-          )}
-        </box>
+            {!domain ? (
+              <box paddingLeft={1} paddingTop={1}>
+                <text fg={theme.fgDim}>No domains.</text>
+              </box>
+            ) : tab === "chat" ? (
+              <ChatView
+                domain={domain}
+                msgs={msgs}
+                busy={busy}
+                engineLabel={engineLabel(cliByDomain[domain.name])}
+                suggestions={prompts[domain.name] ?? []}
+                controls={{
+                  councilOn,
+                  framework,
+                  lens,
+                  webOn,
+                  saveOn,
+                  serendipityOn,
+                  auto,
+                  onToggleCouncil: () => setCouncilOn((c) => !c),
+                  onCycleFramework: cycleFramework,
+                  onCycleLens: cycleLens,
+                  onToggleWeb: () => setWebOn((w) => !w),
+                  onToggleSave: () => setSaveOn((s) => !s),
+                  onToggleSerendipity: () => setSerendipityOn((s) => !s),
+                  onCycleAuto: cycleAuto,
+                }}
+                inputRef={chatInputRef}
+                inputFocused={focus === "chat"}
+                onSubmit={submitChat}
+                onFocusChat={() => setFocus("chat")}
+                onPickSuggestion={(s) => {
+                  setFocus("chat");
+                  submitChat(s);
+                }}
+              />
+            ) : tab === "state" ? (
+              <StateView docs={docs[domain.name]} />
+            ) : tab === "score" ? (
+              <ScoreView score={scores[domain.name]} auditing={auditing.has(domain.name)} />
+            ) : tab === "manifest" ? (
+              <ManifestView
+                manifest={manifests[domain.name]}
+                editing={manifestEdit}
+                inputRef={manifestInputRef}
+                onSubmit={commitEdit}
+              />
+            ) : (
+              <HistoryView history={histories[domain.name]} />
+            )}
+          </box>
+        )}
       </box>
 
       <Footer focus={focus} tab={tab} lifeReadiness={lifeReadiness} />

@@ -33,7 +33,31 @@ interface Props {
   onCycleFramework?: () => void;
   onCycleLens?: () => void;
   onToggleWeb?: () => void;
+  onConfigure?: () => void;
+  onBench?: () => void;
+  onTools?: () => void;
   cliHealth?: CliHealth[];
+}
+
+// configure / bench / tools — the three clickable banner buttons.
+function ToolButtons(props: Props) {
+  return (
+    <box flexDirection="row">
+      <box paddingLeft={2} paddingRight={1} onMouseDown={props.onConfigure}>
+        <text fg={theme.aiAccent}>◇ configure</text>
+      </box>
+      <box paddingRight={1} onMouseDown={props.onBench}>
+        <text fg={theme.aiAccent} attributes={1}>
+          ◈ bench
+        </text>
+      </box>
+      <box paddingRight={1} onMouseDown={props.onTools}>
+        <text fg={theme.aiAccent} attributes={1}>
+          ▸ tools
+        </text>
+      </box>
+    </box>
+  );
 }
 
 function fwLabelOf(framework: FrameworkId | null): string {
@@ -127,8 +151,8 @@ function CompactBranding(props: Props & { dateLabel: string; timeLabel: string }
         <text fg={theme.fgFaint}>{vaultLabel}</text>
       </box>
       <box flexDirection="row" height={1}>
-        <text fg={theme.fgFaint}>{"tools   "}</text>
-        <text fg={theme.aiAccent}>{" ◇ configure   ◈ bench   ▸ tools"}</text>
+        <text fg={theme.fgFaint}>{"tools  "}</text>
+        <ToolButtons {...props} />
       </box>
     </box>
   );
@@ -389,7 +413,7 @@ function StatusColumn(props: Props & { dateLabel: string; yearLabel: number; tim
           onMouseDown={props.onToggleWeb}
           paddingLeft={2}
         />
-        <text fg={theme.aiAccent}>{"  ◇ configure   ◈ bench   ▸ tools"}</text>
+        <ToolButtons {...props} />
       </box>
       <CliHealthRow cliHealth={props.cliHealth} />
     </box>
