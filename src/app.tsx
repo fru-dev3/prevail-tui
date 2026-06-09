@@ -106,6 +106,7 @@ export function App({
   const [focus, setFocus] = useState<Focus>("sidebar");
   const [tab, setTab] = useState<Tab>("chat");
   const [busy, setBusy] = useState(false);
+  const [tick, setTick] = useState(0);
   const [now, setNow] = useState(Date.now());
 
   // banner defaults — client-side (the --json contract doesn't expose these).
@@ -176,6 +177,13 @@ export function App({
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
+
+  // ── thinking-word animation: tick ~8×/s while a turn is in flight ─────────────
+  useEffect(() => {
+    if (!busy) return;
+    const t = setInterval(() => setTick((x) => x + 1), 120);
+    return () => clearInterval(t);
+  }, [busy]);
 
   // ── CLI health (probe once on boot; cheap `<cli> --version` each) ─────────────
   useEffect(() => {
@@ -370,10 +378,33 @@ export function App({
       return next;
     });
 
+  // A one-line summary of the settings a turn ran with, shown under the reply.
+  function turnMeta(choice: CliChoice): string {
+    const fw = framework ? (getFramework(framework)?.label ?? framework) : "none";
+    const ln =
+      lens === null ? "none" : lens === "all" ? "all (×5)" : (getLens(lens)?.label ?? "none");
+    // provider:model is already in the bubble header; carry the other keys here.
+    const parts: string[] = [];
+    if (choice.cli) parts.push(`pinned ${choice.cli}${choice.model ? `:${choice.model}` : ""}`);
+    parts.push(
+      `Framework ${fw}`,
+      `Lens ${ln}`,
+      `Web ${bunkerOn ? "OFF (bunker)" : webOn ? "ON" : "OFF"}`,
+    );
+    return parts.join(" · ");
+  }
+
   async function sendSingle(name: string, text: string) {
+    const choice = cliByDomain[name] ?? {};
     pushMsg(name, { id: nextId++, role: "user", text });
     const aid = nextId++;
-    pushMsg(name, { id: aid, role: "assistant", text: "", streaming: true });
+    pushMsg(name, {
+      id: aid,
+      role: "assistant",
+      text: "",
+      meta: turnMeta(choice),
+      streaming: true,
+    });
     markStreaming(name, true);
     const onEvent = (e: ChatEvent) => {
       if (e.type === "start" && e.thread) sessions.current[name] = e.thread;
@@ -388,7 +419,6 @@ export function App({
       } else if (e.type === "error" && e.error)
         patchMsg(name, aid, { text: `⚠ ${e.error}`, cli: "error" });
     };
-    const choice = cliByDomain[name] ?? {};
     // Prepend the active framework + lens as bracket preambles (the cockpit's
     // approach — the contract has no flag for these).
     const preamble =
@@ -976,7 +1006,6 @@ export function App({
           domains={domains}
           domainIdx={domainIdx}
           focused={focus === "sidebar"}
-          scores={badges}
           streaming={streaming}
           onSelect={(i) => {
             setDomainIdx(i);
@@ -1044,6 +1073,7 @@ export function App({
                 domain={domain}
                 msgs={msgs}
                 busy={busy}
+                tick={tick}
                 engineLabel={engineLabel(cliByDomain[domain.name])}
                 suggestions={prompts[domain.name] ?? []}
                 controls={{

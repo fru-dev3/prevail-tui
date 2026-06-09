@@ -9,7 +9,7 @@ import type { DomainSummary } from "./contract.ts";
 import { type FrameworkId, getFramework } from "./framework.ts";
 import { type LensSelection, getLens } from "./lens.ts";
 import { Markdown } from "./markdown.tsx";
-import { theme } from "./theme.ts";
+import { spinnerChar, theme, thinkingWord } from "./theme.ts";
 
 export type Role = "user" | "assistant" | "system" | "council";
 
@@ -19,6 +19,8 @@ export interface ChatMsg {
   text: string;
   /** engine label on assistant rows, or "error" for failures, or a panel summary. */
   cli?: string;
+  /** the settings the turn ran with, e.g. "Framework PROS/CONS · Lens all(×5) · Web ON". */
+  meta?: string;
   streaming?: boolean;
 }
 
@@ -40,7 +42,7 @@ export interface ChatControls {
   onCycleAuto: () => void;
 }
 
-export function MessageRow({ msg }: { msg: ChatMsg }) {
+export function MessageRow({ msg, tick }: { msg: ChatMsg; tick: number }) {
   const tag =
     msg.role === "user"
       ? { label: "you", color: theme.ai, prefix: "› " }
@@ -56,14 +58,20 @@ export function MessageRow({ msg }: { msg: ChatMsg }) {
   const isError = msg.cli === "error";
   const asMarkdown =
     !isError && (msg.role === "assistant" || msg.role === "council") && msg.text.length > 0;
+  // While streaming with nothing yet, show a cycling "thinking" word + spinner
+  // so it's obvious the model is working (Claude-Code style).
+  const thinking = msg.streaming && msg.text.length === 0;
   return (
     <box flexDirection="column" paddingTop={1}>
       <text fg={tag.color} attributes={1}>
         {tag.prefix}
         {tag.label}
-        {msg.streaming ? " ▌" : ""}
+        {msg.streaming && msg.text.length > 0 ? " ▌" : ""}
       </text>
-      {asMarkdown ? (
+      {msg.meta ? <text fg={theme.fgFaint}>{msg.meta}</text> : null}
+      {thinking ? (
+        <text fg={theme.gold}>{`${spinnerChar(tick)} ${thinkingWord(tick)}…`}</text>
+      ) : asMarkdown ? (
         <Markdown content={msg.text} />
       ) : (
         <text fg={isError ? theme.err : theme.fg}>{msg.text}</text>
@@ -152,6 +160,7 @@ export function ChatView({
   domain,
   msgs,
   busy,
+  tick,
   engineLabel,
   suggestions,
   controls,
@@ -164,6 +173,8 @@ export function ChatView({
   domain: DomainSummary;
   msgs: ChatMsg[];
   busy: boolean;
+  /** animation tick, advances ~8×/s while a turn is in flight. */
+  tick: number;
   /** active cli/model for this domain, e.g. "claude" or "codex · gpt-5". */
   engineLabel: string;
   /** starter-prompt titles from PROMPTS.md, shown on an empty thread. */
@@ -188,7 +199,7 @@ export function ChatView({
             )}
           </box>
         ) : (
-          msgs.map((m) => <MessageRow key={m.id} msg={m} />)
+          msgs.map((m) => <MessageRow key={m.id} msg={m} tick={tick} />)
         )}
       </scrollbox>
 
@@ -197,7 +208,7 @@ export function ChatView({
         <text fg={theme.fgFaint}>
           {`${turns} msg${turns === 1 ? "" : "s"}`}
           {`  ·  ${engineLabel}`}
-          {busy ? "  ·  streaming…" : "  ·  ready"}
+          {busy ? `  ·  ${spinnerChar(tick)} ${thinkingWord(tick)}…` : "  ·  ready"}
         </text>
       </box>
 
