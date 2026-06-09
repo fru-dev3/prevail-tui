@@ -29,6 +29,7 @@ interface Props {
   framework: FrameworkId | null;
   lens: LensSelection;
   webOn: boolean;
+  bunkerOn?: boolean;
   onToggleCouncil?: () => void;
   onCycleFramework?: () => void;
   onCycleLens?: () => void;
@@ -187,6 +188,7 @@ function DefaultsChips(props: Props & { paddingLeft?: number }) {
         active={props.webOn}
         onMouseDown={props.onToggleWeb}
       />
+      {props.bunkerOn ? <Chip label="⊘ BUNKER" value="ON" active /> : null}
     </>
   );
 }

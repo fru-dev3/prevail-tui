@@ -6,11 +6,13 @@
  */
 import type {
   ContextScore,
+  DecisionRecord,
   DomainManifest,
   MissingItem,
   Relevance,
   ScoreDimension,
   ScoreHistory,
+  SurfaceResult,
 } from "./contract.ts";
 import {
   bar,
@@ -284,6 +286,113 @@ export function HistoryView({ history }: { history: ScoreHistory | undefined }) 
             <text fg={scoreColor(h.score)}>{String(h.score).padStart(3)}</text>
           </box>
         ))}
+    </scrollbox>
+  );
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+// Proactive surface (questions + next actions), the decision log (with the
+// thumbs the council learns from), and the domain's distilled long-term memory —
+// the parity twin of the desktop's context drawer + Insights surface.
+export function InsightsView({
+  surface,
+  surfacing,
+  decisions,
+  memory,
+}: {
+  surface: SurfaceResult | undefined;
+  surfacing: boolean;
+  decisions: DecisionRecord[] | undefined;
+  memory: string | undefined;
+}) {
+  return (
+    <scrollbox flexGrow={1} paddingLeft={1} paddingRight={1}>
+      {/* Surface */}
+      <text> </text>
+      <box flexDirection="row">
+        <text fg={theme.gold} attributes={1}>
+          SURFACE
+        </text>
+        {surfacing ? <text fg={theme.gold}>{"   ⠿ thinking…"}</text> : null}
+      </box>
+      {!surface ? (
+        <text fg={theme.fgFaint}>
+          {surfacing
+            ? "generating insights…"
+            : "press a (or /surface) to surface questions + next actions"}
+        </text>
+      ) : (
+        <box flexDirection="column">
+          <text
+            fg={theme.fgFaint}
+          >{`${surface.stale ? "cached (stale) · " : ""}press a to regenerate`}</text>
+          {surface.questions.length > 0 ? (
+            <box flexDirection="column" paddingTop={1}>
+              <text fg={theme.fgDim}>questions worth resolving</text>
+              {surface.questions.map((q) => (
+                <text key={`q-${q}`} fg={theme.fg}>{`  ? ${q}`}</text>
+              ))}
+            </box>
+          ) : null}
+          {surface.actions.length > 0 ? (
+            <box flexDirection="column" paddingTop={1}>
+              <text fg={theme.fgDim}>next actions</text>
+              {surface.actions.map((a) => (
+                <text key={`a-${a}`} fg={theme.fg}>{`  → ${a}`}</text>
+              ))}
+            </box>
+          ) : null}
+        </box>
+      )}
+
+      {/* Decisions */}
+      <text> </text>
+      <text fg={theme.gold} attributes={1}>
+        RECENT DECISIONS
+      </text>
+      {!decisions ? (
+        <text fg={theme.fgFaint}>loading…</text>
+      ) : decisions.length === 0 ? (
+        <text fg={theme.fgFaint}>no decisions yet · a council verdict is saved here</text>
+      ) : (
+        decisions.map((d, i) => {
+          const when = relativeTime(d.ts);
+          const fb = d.feedback?.rating === "up" ? " ↑" : d.feedback?.rating === "down" ? " ↓" : "";
+          const head = (d.prompt ?? d.verdict ?? d.type ?? "decision")
+            .replace(/\s+/g, " ")
+            .slice(0, 78);
+          return (
+            <box key={`${d.id}-${i}`} flexDirection="column" paddingTop={i === 0 ? 1 : 0}>
+              <box flexDirection="row">
+                <text fg={theme.fgDim}>{`${when.padEnd(10)} `}</text>
+                <text fg={d.feedback?.rating === "down" ? theme.warn : theme.fg}>{head}</text>
+                {fb ? <text fg={theme.ok}>{fb}</text> : null}
+              </box>
+              {d.verdict && d.prompt ? (
+                <text
+                  fg={theme.fgFaint}
+                >{`           ${d.verdict.replace(/\s+/g, " ").slice(0, 76)}`}</text>
+              ) : null}
+            </box>
+          );
+        })
+      )}
+
+      {/* Long-term memory */}
+      <text> </text>
+      <text fg={theme.gold} attributes={1}>
+        LONG-TERM MEMORY
+      </text>
+      {memory === undefined ? (
+        <text fg={theme.fgFaint}>loading…</text>
+      ) : memory.trim() === "" ? (
+        <text fg={theme.fgFaint}>none distilled yet · it grows as you decide things here</text>
+      ) : (
+        <box paddingTop={1}>
+          <Markdown content={memory.slice(0, 4000)} />
+        </box>
+      )}
+      <text> </text>
     </scrollbox>
   );
 }

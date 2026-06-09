@@ -6,34 +6,54 @@ import type {
   ChatEvent,
   CliKind,
   ContextScore,
+  DecisionRecord,
   DomainManifest,
   DomainSummary,
   LifeScore,
+  ModesState,
   ScoreHistory,
+  SurfaceResult,
 } from "./contract.ts";
 import { runCouncil } from "./council.ts";
 import {
   type EngineOpts,
+  type ModesPatch,
+  councilFeedback,
   engineVersion,
   getManifest,
+  getModes,
+  getPrivacy,
+  listDecisions,
   probeClis,
+  readMemory,
   scoreAll,
   scoreDomain,
   scoreHistory,
+  searchHistory,
   setManifest,
+  setModes,
+  setPrivacy,
   streamChat,
+  surface,
 } from "./engine.ts";
 import { scoreColor, shortenPath } from "./format.ts";
 import { FRAMEWORKS, type FrameworkId, buildFrameworkPreamble, getFramework } from "./framework.ts";
 import { LENSES, type LensSelection, buildLensPreamble, getLens } from "./lens.ts";
 import { Overlay } from "./overlay.tsx";
-import { HistoryView, type ManifestEdit, ManifestView, ScoreView, StateView } from "./panes.tsx";
+import {
+  HistoryView,
+  InsightsView,
+  type ManifestEdit,
+  ManifestView,
+  ScoreView,
+  StateView,
+} from "./panes.tsx";
 import { Sidebar } from "./sidebar.tsx";
 import { theme } from "./theme.ts";
 import { type DomainDocs, readDomainDocs, readDomainPrompts } from "./vault.ts";
 
-type Tab = "chat" | "state" | "score" | "manifest" | "history";
-const TABS: Tab[] = ["chat", "state", "score", "manifest", "history"];
+type Tab = "chat" | "insights" | "state" | "score" | "manifest" | "history";
+const TABS: Tab[] = ["chat", "insights", "state", "score", "manifest", "history"];
 type Focus = "sidebar" | "chat" | "manifest-edit";
 
 const CLI_KINDS: CliKind[] = ["claude", "codex", "antigravity", "gemini", "ollama"];
@@ -47,6 +67,12 @@ const SLASH_HELP = [
   "/claude [model]   switch this domain's chat to claude (codex|gemini|antigravity|ollama too)",
   "/model <name>     set the model on the current cli · /model default clears it",
   "/council <q>      fan the question out to the panel + chair synthesis",
+  "/quorum <n|off>   stop a council once n panelists answer (a stuck one can't block)",
+  "/feedback up|down [note]   rate the last council verdict (feeds learning)",
+  "/bunker on|off    Bunker Mode — keep every turn on a local model",
+  "/search <text>    full-text search across your chat history",
+  "/insights         jump to the insights tab (surface · decisions · memory)",
+  "/surface          regenerate proactive questions + next actions for this domain",
   "/state            jump to the state tab (read-only vault markdown)",
   "/score            jump to the score tab",
   "/audit            run a fresh LLM audit of this domain",
@@ -93,6 +119,20 @@ export function App({
   const [serendipityOn, setSerendipityOn] = useState(false);
   const [auto, setAuto] = useState<"OFF" | "SUGGEST" | "AUTO">("OFF");
   const [cliHealth, setCliHealth] = useState<CliHealth[]>([]);
+  // Bunker Mode (global local-only privacy switch) — synced with the engine so
+  // the TUI shares one source of truth with the desktop. When on, every turn
+  // (single + council) is forced local.
+  const [bunkerOn, setBunkerOn] = useState(false);
+  // Council quorum: stop waiting once N panelists answer (null = wait for all).
+  const [quorum, setQuorum] = useState<number | null>(null);
+  // The last persisted council verdict, so `/feedback up|down` can rate it.
+  const lastDecision = useRef<{ id: string; domain: string } | null>(null);
+
+  // insights tab caches (lazy, per domain)
+  const [surfaces, setSurfaces] = useState<Record<string, SurfaceResult>>({});
+  const [decisions, setDecisions] = useState<Record<string, DecisionRecord[]>>({});
+  const [memories, setMemories] = useState<Record<string, string>>({});
+  const [surfacing, setSurfacing] = useState<Set<string>>(new Set());
 
   // council composition — null = auto (every healthy CLI); a list overrides it.
   const [councilClis, setCouncilClis] = useState<CliKind[] | null>(null);
@@ -150,25 +190,87 @@ export function App({
     };
   }, []);
 
-  // Cycle the framework: none → bluf → … → none.
-  const cycleFramework = () =>
-    setFramework((cur) => {
-      const ids = FRAMEWORKS.map((f) => f.id);
-      if (cur === null) return ids[0];
-      const next = ids[ids.indexOf(cur) + 1];
-      return next ?? null;
-    });
-  // Cycle the lens: none → all → each lens → none.
-  const cycleLens = () =>
-    setLens((cur) => {
-      const ids = LENSES.map((l) => l.id);
-      if (cur === null) return "all";
-      if (cur === "all") return ids[0];
-      const next = ids[ids.indexOf(cur as (typeof ids)[number]) + 1];
-      return next ?? null;
-    });
-  const cycleAuto = () =>
-    setAuto((a) => (a === "OFF" ? "SUGGEST" : a === "SUGGEST" ? "AUTO" : "OFF"));
+  // ── privacy (Bunker Mode) — read the persisted global switch once on boot ─────
+  useEffect(() => {
+    let cancelled = false;
+    getPrivacy(opts)
+      .then((p) => {
+        if (!cancelled) setBunkerOn(p.bunker);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [opts]);
+
+  // ── sync the config bar with the engine's per-domain modes on domain change ───
+  // The banner toggles (web/save/serendipity/auto/framework/lens) are real,
+  // engine-persisted state — load them so the TUI reflects (and shares) the
+  // same config the desktop writes, instead of drifting client-side.
+  useEffect(() => {
+    if (!domain) return;
+    let cancelled = false;
+    getModes(domain.name, opts)
+      .then((m: ModesState) => {
+        if (cancelled) return;
+        setWebOn(m.web === "allow");
+        setSaveOn(m.save);
+        setSerendipityOn(m.serendipity);
+        setAuto(m.auto === "auto" ? "AUTO" : m.auto === "suggest" ? "SUGGEST" : "OFF");
+        setFramework((m.framework.id as FrameworkId | null) ?? null);
+        setLens((m.lens.sel as LensSelection) ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [domain, opts]);
+
+  // Persist a modes patch for the active domain (fire-and-forget; the banner
+  // already updated optimistically). Keeps the engine config in lock-step.
+  const persistModes = (patch: ModesPatch) => {
+    const name = domain?.name;
+    if (!name) return;
+    setModes(name, patch, opts).catch(() => {});
+  };
+
+  // Cycle the framework: none → bluf → … → none. Persisted to the engine.
+  const cycleFramework = () => {
+    const ids = FRAMEWORKS.map((f) => f.id);
+    const next = framework === null ? (ids[0] ?? null) : (ids[ids.indexOf(framework) + 1] ?? null);
+    setFramework(next);
+    persistModes({ framework: next ?? "off" });
+  };
+  // Cycle the lens: none → all → each lens → none. Persisted to the engine.
+  const cycleLens = () => {
+    const ids = LENSES.map((l) => l.id);
+    let next: LensSelection;
+    if (lens === null) next = "all";
+    else if (lens === "all") next = ids[0] ?? null;
+    else next = ids[ids.indexOf(lens as (typeof ids)[number]) + 1] ?? null;
+    setLens(next);
+    persistModes({ lens: next === null ? "off" : next });
+  };
+  const cycleAuto = () => {
+    const next = auto === "OFF" ? "SUGGEST" : auto === "SUGGEST" ? "AUTO" : "OFF";
+    setAuto(next);
+    persistModes({ auto: next.toLowerCase() as "off" | "suggest" | "auto" });
+  };
+  const toggleWeb = () => {
+    const next = !webOn;
+    setWebOn(next);
+    persistModes({ web: next ? "allow" : "deny" });
+  };
+  const toggleSave = () => {
+    const next = !saveOn;
+    setSaveOn(next);
+    persistModes({ save: next ? "on" : "off" });
+  };
+  const toggleSerendipity = () => {
+    const next = !serendipityOn;
+    setSerendipityOn(next);
+    persistModes({ serendipity: next ? "on" : "off" });
+  };
 
   // ── starter prompts for the empty chat (cheap; load per domain on select) ─────
   useEffect(() => {
@@ -207,6 +309,16 @@ export function App({
         } else if (tab === "history" && !histories[name]) {
           const h = await scoreHistory(name, opts);
           if (!cancelled) setHistories((m) => ({ ...m, [name]: h }));
+        } else if (tab === "insights") {
+          // Decisions + long-term memory are cheap reads; load them if missing.
+          if (!decisions[name]) {
+            const d = await listDecisions(name, 12, opts);
+            if (!cancelled) setDecisions((m) => ({ ...m, [name]: d }));
+          }
+          if (memories[name] === undefined) {
+            const mem = await readMemory(name, opts);
+            if (!cancelled) setMemories((m) => ({ ...m, [name]: mem.text }));
+          }
         }
       } catch {
         // leave the pane in its loading state; a refresh (r) retries.
@@ -215,7 +327,26 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [domain, tab, scores, manifests, histories, docs, opts]);
+  }, [domain, tab, scores, manifests, histories, docs, decisions, memories, opts]);
+
+  // Generate (or regenerate) the proactive surface for a domain. Cached 6h by
+  // the engine; --force re-runs. Runs local under Bunker.
+  async function runSurface(name: string, force = false) {
+    if (surfacing.has(name)) return;
+    setSurfacing((s) => new Set(s).add(name));
+    try {
+      const r = await surface(name, force, { ...opts });
+      setSurfaces((m) => ({ ...m, [name]: r }));
+    } catch {
+      // leave whatever's cached; the pane shows a hint to retry
+    } finally {
+      setSurfacing((s) => {
+        const n = new Set(s);
+        n.delete(name);
+        return n;
+      });
+    }
+  }
 
   // ── chat helpers ──────────────────────────────────────────────────────────────
   const pushMsg = (name: string, msg: ChatMsg) =>
@@ -271,7 +402,8 @@ export function App({
           session: sessions.current[name],
           cli: choice.cli,
           model: choice.model,
-          localOnly: !webOn,
+          // Bunker forces local; otherwise web-off also means local-only.
+          localOnly: bunkerOn || !webOn,
         },
         onEvent,
         opts,
@@ -284,8 +416,10 @@ export function App({
     }
   }
 
-  // The council panel: an explicit override, else every healthy CLI, else a
-  // claude+codex fallback. The chair is the override, else the first panelist.
+  // The council panel override the user configured (CLIs / chair) in the
+  // Configure overlay. The ENGINE owns the actual fan-out now; this just lets
+  // the user restrict which CLI kinds participate. null = let the engine use
+  // its saved council config.
   function resolvePanel(): { panelists: { cli: CliKind }[]; chair: { cli: CliKind } } {
     const healthy = cliHealth.filter((h) => h.ok).map((h) => h.kind as CliKind);
     const base = councilClis ?? (healthy.length ? healthy : (["claude", "codex"] as CliKind[]));
@@ -293,69 +427,109 @@ export function App({
     return { panelists: base.map((cli) => ({ cli })), chair: { cli: chairCli } };
   }
 
+  // Council, driven by the engine's `council run --json` NDJSON stream. The
+  // panel is created reactively from the engine's `panel` event (the engine
+  // decides the panel from its config), each panelist streams into its own
+  // bubble, the chair's verdict streams into a final bubble, and the persisted
+  // decision id is captured so `/feedback` can rate the verdict.
   async function sendCouncil(name: string, prompt: string) {
     pushMsg(name, { id: nextId++, role: "user", text: prompt });
-    const { panelists, chair } = resolvePanel();
-    pushMsg(name, {
-      id: nextId++,
-      role: "system",
-      cli: "council",
-      text: `convening ${panelists.length} panelist${panelists.length === 1 ? "" : "s"} (${panelists
-        .map((p) => p.cli)
-        .join(", ")}) · chair ${chair.cli}`,
-    });
-    // one streaming bubble per panelist, then the chair's verdict bubble.
-    const panelIds = panelists.map(() => nextId++);
-    for (const [i, p] of panelists.entries()) {
-      pushMsg(name, {
-        id: panelIds[i],
-        role: "assistant",
-        cli: `panelist ${p.cli}`,
-        text: "",
-        streaming: true,
-      });
-    }
-    const vid = nextId++;
-    pushMsg(name, { id: vid, role: "council", text: "", streaming: true });
+    const sysId = nextId++;
+    pushMsg(name, { id: sysId, role: "system", cli: "council", text: "convening the council…" });
+    const panelIds: Record<number, number> = {};
+    let verdictId: number | null = null;
+    const ensureVerdict = (): number => {
+      if (verdictId === null) {
+        verdictId = nextId++;
+        pushMsg(name, { id: verdictId, role: "council", text: "", streaming: true });
+      }
+      return verdictId;
+    };
     markStreaming(name, true);
     try {
       const result = await runCouncil(
         {
           domain: name,
           prompt,
-          panelists,
-          chair,
-          onPanelChunk: (idx, delta) => appendToMsg(name, panelIds[idx], delta),
-          onVerdictChunk: (delta) => appendToMsg(name, vid, delta),
+          quorum: quorum ?? undefined,
+          lens,
+          framework,
+          clis: councilClis ?? undefined,
+          localOnly: bunkerOn || !webOn,
+          onPanel: (panelists) => {
+            patchMsg(name, sysId, {
+              text: `council of ${panelists.length}: ${panelists
+                .map((p) => `${p.cli}${p.lens ? ` [${p.lens}]` : ""}`)
+                .join(", ")}`,
+            });
+            for (const p of panelists) {
+              const id = nextId++;
+              panelIds[p.idx] = id;
+              pushMsg(name, {
+                id,
+                role: "assistant",
+                cli: `panelist ${p.cli}${p.lens ? ` [${p.lens}]` : ""}`,
+                text: "",
+                streaming: true,
+              });
+            }
+          },
+          onPanelChunk: (idx, delta) => {
+            const id = panelIds[idx];
+            if (id) appendToMsg(name, id, delta);
+          },
+          onPanelDone: (idx, ok, ms) => {
+            const id = panelIds[idx];
+            if (!id) return;
+            setMsgs((m) => ({
+              ...m,
+              [name]: (m[name] ?? []).map((x) =>
+                x.id === id
+                  ? {
+                      ...x,
+                      streaming: false,
+                      cli: ok
+                        ? `${(x.cli ?? "panelist").replace(/ [✓·].*/, "")} ✓ ${(ms / 1000).toFixed(1)}s`
+                        : "skipped",
+                      text:
+                        !ok && !x.text ? "(no response — skipped for quorum or failed)" : x.text,
+                    }
+                  : x,
+              ),
+            }));
+          },
+          onChair: () => ensureVerdict(),
+          onVerdictChunk: (delta) => appendToMsg(name, ensureVerdict(), delta),
+          onDecision: (id) => {
+            lastDecision.current = { id, domain: name };
+          },
         },
         opts,
       );
-      // finalize each panelist bubble with its authoritative text + status.
-      for (const [i, p] of result.panel.entries()) {
-        if (p.ok) {
-          patchMsg(name, panelIds[i], {
-            text: p.text || "(empty)",
-            cli: `panelist ${p.cli} ✓`,
-            streaming: false,
-          });
-        } else {
-          patchMsg(name, panelIds[i], {
-            text: `(no response${p.error ? `: ${p.error}` : ""})`,
-            cli: "error",
-            streaming: false,
-          });
-        }
-      }
+      const vid = ensureVerdict();
       if (!result.verdict) {
         patchMsg(name, vid, {
-          text: result.degraded ? "(panel degraded — no verdict)" : "(no verdict)",
+          text: result.error
+            ? `⚠ ${result.error}`
+            : result.degraded
+              ? "(panel degraded — no verdict)"
+              : "(no verdict)",
+          cli: result.error ? "error" : undefined,
+        });
+      } else if (lastDecision.current?.domain === name) {
+        // Hint how to rate the freshly-saved verdict.
+        pushMsg(name, {
+          id: nextId++,
+          role: "system",
+          cli: "help",
+          text: "verdict saved · rate it with /feedback up  or  /feedback down [note]",
         });
       }
     } catch (err) {
-      patchMsg(name, vid, { text: `⚠ ${errMsg(err)}`, cli: "error" });
+      patchMsg(name, ensureVerdict(), { text: `⚠ ${errMsg(err)}`, cli: "error" });
     } finally {
-      for (const id of panelIds) patchMsg(name, id, { streaming: false });
-      patchMsg(name, vid, { streaming: false });
+      for (const id of Object.values(panelIds)) patchMsg(name, id, { streaming: false });
+      if (verdictId !== null) patchMsg(name, verdictId, { streaming: false });
       markStreaming(name, false);
     }
   }
@@ -456,6 +630,161 @@ export function App({
             setBusy(true);
             sendCouncil(name, arg).finally(() => setBusy(false));
           }
+          return;
+        case "quorum": {
+          if (arg === "off" || arg === "0" || arg === "") {
+            setQuorum(null);
+            pushMsg(name, {
+              id: nextId++,
+              role: "system",
+              cli: "system",
+              text: "quorum off — council waits for every panelist",
+            });
+          } else {
+            const n = Number.parseInt(arg, 10);
+            if (Number.isNaN(n) || n < 1) {
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "error",
+                text: "usage: /quorum <n|off>",
+              });
+            } else {
+              setQuorum(n);
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "system",
+                text: `quorum → ${n} (stop once ${n} answer; a stuck panelist can't block)`,
+              });
+            }
+          }
+          return;
+        }
+        case "feedback": {
+          const decision = lastDecision.current;
+          const [rating, ...noteParts] = arg.split(" ");
+          const note = noteParts.join(" ").trim() || undefined;
+          if (!decision) {
+            pushMsg(name, {
+              id: nextId++,
+              role: "system",
+              cli: "error",
+              text: "no recent council verdict to rate",
+            });
+            return;
+          }
+          if (rating !== "up" && rating !== "down" && rating !== "clear") {
+            pushMsg(name, {
+              id: nextId++,
+              role: "system",
+              cli: "error",
+              text: "usage: /feedback up|down|clear [note]",
+            });
+            return;
+          }
+          councilFeedback(decision.domain, decision.id, rating, note, opts)
+            .then(() =>
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "help",
+                text: `verdict rated ${rating}${note ? ` · "${note}"` : ""} — the council will learn from it`,
+              }),
+            )
+            .catch((err) =>
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "error",
+                text: `feedback failed: ${errMsg(err)}`,
+              }),
+            );
+          return;
+        }
+        case "bunker": {
+          const on = arg === "on" || arg === "true" || arg === "1";
+          const off = arg === "off" || arg === "false" || arg === "0";
+          if (!on && !off) {
+            pushMsg(name, {
+              id: nextId++,
+              role: "system",
+              cli: "error",
+              text: "usage: /bunker on|off",
+            });
+            return;
+          }
+          setBunkerOn(on);
+          setPrivacy(on, opts)
+            .then(() =>
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: on ? "council" : "system",
+                text: on
+                  ? "Bunker Mode ON — every turn stays on a local model"
+                  : "Bunker Mode off — cloud engines available again",
+              }),
+            )
+            .catch(() => {});
+          return;
+        }
+        case "search": {
+          if (!arg) {
+            pushMsg(name, {
+              id: nextId++,
+              role: "system",
+              cli: "error",
+              text: "usage: /search <text>",
+            });
+            return;
+          }
+          pushMsg(name, {
+            id: nextId++,
+            role: "system",
+            cli: "system",
+            text: `searching for "${arg}"…`,
+          });
+          searchHistory(arg, 12, opts)
+            .then((hits) => {
+              if (hits.length === 0) {
+                pushMsg(name, {
+                  id: nextId++,
+                  role: "system",
+                  cli: "help",
+                  text: `no matches for "${arg}"`,
+                });
+                return;
+              }
+              const body = hits
+                .map(
+                  (h) =>
+                    `· [${h.domain}/${h.role}] ${h.content.replace(/\s+/g, " ").slice(0, 120)}`,
+                )
+                .join("\n");
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "help",
+                text: `${hits.length} match${hits.length === 1 ? "" : "es"}:\n${body}`,
+              });
+            })
+            .catch((err) =>
+              pushMsg(name, {
+                id: nextId++,
+                role: "system",
+                cli: "error",
+                text: `search failed: ${errMsg(err)}`,
+              }),
+            );
+          return;
+        }
+        case "insights":
+          setTab("insights");
+          return;
+        case "surface":
+          setTab("insights");
+          runSurface(name, true);
           return;
         case "state":
           setTab("state");
@@ -565,6 +894,7 @@ export function App({
       case "3":
       case "4":
       case "5":
+      case "6":
         setTab(TABS[Number(name) - 1]);
         break;
       case "i":
@@ -574,6 +904,7 @@ export function App({
         break;
       case "a":
         if (tab === "score" && domain) runAudit(domain.name);
+        else if (tab === "insights" && domain) runSurface(domain.name, true);
         break;
       case "e":
         if (tab === "manifest") beginEdit("label");
@@ -629,10 +960,11 @@ export function App({
         framework={framework}
         lens={lens}
         webOn={webOn}
+        bunkerOn={bunkerOn}
         onToggleCouncil={() => setCouncilOn((c) => !c)}
         onCycleFramework={cycleFramework}
         onCycleLens={cycleLens}
-        onToggleWeb={() => setWebOn((w) => !w)}
+        onToggleWeb={toggleWeb}
         onConfigure={() => setOverlay("configure")}
         onBench={() => setOverlay("bench")}
         onTools={() => setOverlay("tools")}
@@ -725,9 +1057,9 @@ export function App({
                   onToggleCouncil: () => setCouncilOn((c) => !c),
                   onCycleFramework: cycleFramework,
                   onCycleLens: cycleLens,
-                  onToggleWeb: () => setWebOn((w) => !w),
-                  onToggleSave: () => setSaveOn((s) => !s),
-                  onToggleSerendipity: () => setSerendipityOn((s) => !s),
+                  onToggleWeb: toggleWeb,
+                  onToggleSave: toggleSave,
+                  onToggleSerendipity: toggleSerendipity,
                   onCycleAuto: cycleAuto,
                 }}
                 inputRef={chatInputRef}
@@ -738,6 +1070,13 @@ export function App({
                   setFocus("chat");
                   submitChat(s);
                 }}
+              />
+            ) : tab === "insights" ? (
+              <InsightsView
+                surface={surfaces[domain.name]}
+                surfacing={surfacing.has(domain.name)}
+                decisions={decisions[domain.name]}
+                memory={memories[domain.name]}
               />
             ) : tab === "state" ? (
               <StateView docs={docs[domain.name]} />

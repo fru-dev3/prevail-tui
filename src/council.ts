@@ -1,141 +1,140 @@
 /**
- * Council, orchestrated client-side.
+ * Council — now orchestrated by the ENGINE.
  *
- * The CLI's `chat --domain X --json` is single-CLI. The in-process cockpit has
- * a richer `runCouncilOneShot()` that the --json contract does NOT expose yet.
- * Rather than block on a CLI change (that repo is owned by another process),
- * we reproduce council at THIS layer: fan the same prompt out to each panelist
- * via streamChat, collect their replies, then run one synthesis ("chair") turn
- * that reads the panel and writes a verdict.
+ * The engine ships `prevail council run --domain X --json`: it fans the prompt
+ * across the configured panel in parallel, has a chair synthesize one verdict,
+ * supports quorum (a stuck panelist can't block the verdict), and persists the
+ * verdict to <domain>/_decisions.jsonl so the council learns. All three
+ * frontends (cli cockpit, desktop, this TUI) now share that one orchestrator.
  *
- * When the engine later ships `prevail council --json`, swap this module's body
- * for a single streamed call — the public API here stays the same.
+ * This module is a thin adapter: it reads the NDJSON CouncilEvent stream and
+ * fans the events out to the caller's callbacks, then returns the assembled
+ * result. (Previously this file reproduced the whole fan-out client-side.)
  */
-import type { ChatEvent, CliKind } from "./contract.ts";
-import { type EngineOpts, streamChat } from "./engine.ts";
+import type { CliKind, CouncilEvent } from "./contract.ts";
+import { type EngineOpts, streamCouncil } from "./engine.ts";
 
-export interface Panelist {
-  cli: CliKind;
-  model?: string;
-}
-
-export interface PanelReply {
-  cli: CliKind;
-  model?: string;
+export interface CouncilPanelLive {
+  idx: number;
+  cli: string;
+  model: string;
+  lens: string | null;
   text: string;
-  ms: number;
-  ok: boolean;
-  error?: string;
+  ok?: boolean;
+  ms?: number;
 }
 
 export interface CouncilResult {
-  panel: PanelReply[];
+  panel: CouncilPanelLive[];
   verdict: string;
-  chair: Panelist;
+  chairLabel: string;
   degraded: boolean;
+  decisionId?: string;
+  error?: string;
 }
 
 export interface CouncilArgs {
   domain: string;
   prompt: string;
-  panelists: Panelist[];
-  chair: Panelist;
+  quorum?: number;
+  lens?: string | null;
+  framework?: string | null;
+  clis?: CliKind[];
   localOnly?: boolean;
-  /** streamed chunk from a specific panelist (by index) */
+  /** the engine resolved the panel — one entry per panelist, by stream index */
+  onPanel?: (panelists: { idx: number; cli: string; model: string; lens: string | null }[]) => void;
+  /** a panelist streamed a token */
   onPanelChunk?: (idx: number, delta: string) => void;
-  /** streamed chunk from the chair's synthesis */
+  /** a panelist settled (ok or failed/aborted) */
+  onPanelDone?: (idx: number, ok: boolean, ms: number) => void;
+  /** the chair began synthesizing */
+  onChair?: (chair: string) => void;
+  /** the chair streamed a verdict token */
   onVerdictChunk?: (delta: string) => void;
-}
-
-function accumulate(onDelta?: (s: string) => void) {
-  let text = "";
-  const onEvent = (e: ChatEvent) => {
-    if (e.type === "delta" && e.text) {
-      text += e.text;
-      onDelta?.(e.text);
-    } else if (e.type === "assistant" && e.text) {
-      // final assistant text is authoritative if no deltas were streamed
-      if (!text) text = e.text;
-    }
-  };
-  return { onEvent, get: () => text };
-}
-
-async function runPanelist(
-  args: CouncilArgs,
-  p: Panelist,
-  idx: number,
-  opts?: EngineOpts,
-): Promise<PanelReply> {
-  const startedAt = Date.now();
-  const acc = accumulate((d) => args.onPanelChunk?.(idx, d));
-  try {
-    await streamChat(
-      {
-        domain: args.domain,
-        message: args.prompt,
-        cli: p.cli,
-        model: p.model,
-        localOnly: args.localOnly,
-      },
-      acc.onEvent,
-      opts,
-    );
-    return { cli: p.cli, model: p.model, text: acc.get(), ms: Date.now() - startedAt, ok: true };
-  } catch (err) {
-    return {
-      cli: p.cli,
-      model: p.model,
-      text: acc.get(),
-      ms: Date.now() - startedAt,
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-function buildChairPrompt(question: string, panel: PanelReply[]): string {
-  const blocks = panel
-    .filter((r) => r.ok && r.text.trim())
-    .map(
-      (r, i) => `### Panelist ${i + 1} — ${r.cli}${r.model ? `:${r.model}` : ""}\n${r.text.trim()}`,
-    )
-    .join("\n\n");
-  return [
-    "You are the chair of a council. Below are independent answers from several",
-    "AI panelists to the same question. Read them all, then write ONE decisive",
-    "verdict for the user. Lead with the recommendation (BLUF). Then add a short",
-    "'Where panelists disagreed' note if they diverged. Be concise.",
-    "",
-    `## Question\n${question}`,
-    "",
-    `## Panel\n${blocks}`,
-  ].join("\n");
+  /** the verdict was persisted — id keys council feedback */
+  onDecision?: (id: string) => void;
 }
 
 export async function runCouncil(args: CouncilArgs, opts?: EngineOpts): Promise<CouncilResult> {
-  // 1. Fan out — every panelist answers the same prompt in parallel.
-  const panel = await Promise.all(args.panelists.map((p, i) => runPanelist(args, p, i, opts)));
+  const panel: Record<number, CouncilPanelLive> = {};
+  let verdict = "";
+  let chairLabel = "";
+  let degraded = false;
+  let decisionId: string | undefined;
+  let error: string | undefined;
 
-  const answered = panel.filter((r) => r.ok && r.text.trim());
-  const degraded = answered.length < args.panelists.length;
+  const onEvent = (e: CouncilEvent) => {
+    switch (e.type) {
+      case "panel":
+        if (e.panelists) {
+          for (const p of e.panelists) panel[p.idx] = { ...p, text: "" };
+          args.onPanel?.(e.panelists);
+        }
+        break;
+      case "delta":
+        if (typeof e.idx === "number" && e.text) {
+          let p = panel[e.idx];
+          if (!p) {
+            p = { idx: e.idx, cli: "?", model: "", lens: null, text: "" };
+            panel[e.idx] = p;
+          }
+          p.text += e.text;
+          args.onPanelChunk?.(e.idx, e.text);
+        }
+        break;
+      case "panelist":
+        if (typeof e.idx === "number") {
+          const p = panel[e.idx];
+          if (p) {
+            p.ok = e.ok;
+            p.ms = e.ms;
+          }
+          args.onPanelDone?.(e.idx, !!e.ok, e.ms ?? 0);
+        }
+        break;
+      case "chair":
+        chairLabel = e.chair ?? "";
+        args.onChair?.(chairLabel);
+        break;
+      case "verdict-delta":
+        if (e.text) {
+          verdict += e.text;
+          args.onVerdictChunk?.(e.text);
+        }
+        break;
+      case "verdict":
+        if (e.text) verdict = e.text;
+        chairLabel = e.chairLabel ?? chairLabel;
+        degraded = !!e.degraded;
+        break;
+      case "decision":
+        decisionId = e.id;
+        if (e.id) args.onDecision?.(e.id);
+        break;
+      case "error":
+        error = e.error ?? "council failed";
+        break;
+    }
+  };
 
-  // 2. Synthesize — the chair reads the panel and writes the verdict.
-  if (answered.length === 0) {
-    return { panel, verdict: "", chair: args.chair, degraded: true };
+  try {
+    await streamCouncil(
+      {
+        domain: args.domain,
+        message: args.prompt,
+        quorum: args.quorum,
+        lens: args.lens ?? undefined,
+        framework: args.framework ?? undefined,
+        clis: args.clis,
+        localOnly: args.localOnly,
+      },
+      onEvent,
+      opts,
+    );
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
   }
-  const acc = accumulate(args.onVerdictChunk);
-  await streamChat(
-    {
-      domain: args.domain,
-      message: buildChairPrompt(args.prompt, panel),
-      cli: args.chair.cli,
-      model: args.chair.model,
-      localOnly: args.localOnly,
-    },
-    acc.onEvent,
-    opts,
-  );
 
-  return { panel, verdict: acc.get(), chair: args.chair, degraded };
+  const panelArr = Object.values(panel).sort((a, b) => a.idx - b.idx);
+  return { panel: panelArr, verdict, chairLabel, degraded, decisionId, error };
 }

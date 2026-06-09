@@ -13,15 +13,25 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+  type BenchQuestionInfo,
+  type CatalogItem,
   type ChatEvent,
   type ChatRequest,
+  type ConnectorInfo,
   type ContextScore,
+  type CouncilEvent,
+  type CouncilRunRequest,
+  type DecisionRecord,
   type DomainManifest,
   type DomainSummary,
   type JsonError,
   type LifeScore,
   type ManifestPatch,
+  type ModesState,
+  type PrivacyState,
   type ScoreHistory,
+  type SearchHit,
+  type SurfaceResult,
   isJsonError,
 } from "./contract.ts";
 
@@ -275,4 +285,177 @@ export async function streamChat(
 
   const code = await proc.exited;
   return code;
+}
+
+// ── Streaming council (NDJSON) ───────────────────────────────────────────────
+/**
+ * Drive a full council turn through the engine's `council run --json` NDJSON
+ * stream. The engine owns the orchestration now (fan-out, chair synthesis,
+ * quorum, decision persistence) — this is a thin reader that hands each
+ * CouncilEvent to `onEvent`. Replaces the old client-side council.ts fan-out.
+ */
+export async function streamCouncil(
+  req: CouncilRunRequest,
+  onEvent: (e: CouncilEvent) => void,
+  opts?: EngineOpts,
+): Promise<number> {
+  const args = ["council", "run", "--domain", req.domain || "general"];
+  if (typeof req.quorum === "number") args.push("--quorum", String(req.quorum));
+  if (req.lens !== undefined && req.lens !== null) args.push("--lens", req.lens);
+  if (req.framework !== undefined && req.framework !== null)
+    args.push("--framework", req.framework);
+  if (req.clis?.length) args.push("--cli", req.clis.join(","));
+  if (req.localOnly) args.push("--local-only");
+  args.push("--json");
+
+  const proc = Bun.spawn([resolvePrevailBin(), ...baseArgs(opts, args)], {
+    stdin: new TextEncoder().encode(req.message),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: buildEnv(),
+    signal: opts?.signal,
+  });
+
+  const decoder = new TextDecoder();
+  let buf = "";
+  const pump = (chunk: string) => {
+    buf += chunk;
+    let nl = buf.indexOf("\n");
+    while (nl !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) {
+        try {
+          onEvent(JSON.parse(line) as CouncilEvent);
+        } catch {
+          /* ignore malformed lines */
+        }
+      }
+      nl = buf.indexOf("\n");
+    }
+  };
+
+  // @ts-expect-error Bun's ReadableStream is async-iterable at runtime.
+  for await (const bytes of proc.stdout) {
+    pump(decoder.decode(bytes as Uint8Array, { stream: true }));
+  }
+  if (buf.trim()) pump(`${buf}\n`);
+  return proc.exited;
+}
+
+/** Rate a recorded council verdict (feeds the learning loop). */
+export function councilFeedback(
+  domain: string,
+  id: string,
+  rating: "up" | "down" | "clear",
+  note?: string,
+  opts?: EngineOpts,
+): Promise<{ ok: true }> {
+  const args = [
+    "council",
+    "feedback",
+    "--domain",
+    domain || "general",
+    "--id",
+    id,
+    "--rating",
+    rating,
+  ];
+  if (note) args.push("--note", note);
+  args.push("--json");
+  return runJson<{ ok: true }>(args, opts);
+}
+
+// ── Read endpoints ───────────────────────────────────────────────────────────
+export function listDecisions(
+  domain: string,
+  limit?: number,
+  opts?: EngineOpts,
+): Promise<DecisionRecord[]> {
+  const args = ["decisions", "list", domain || "general"];
+  if (typeof limit === "number") args.push("--limit", String(limit));
+  args.push("--json");
+  return runJson<DecisionRecord[]>(args, opts);
+}
+
+export function readMemory(
+  domain: string,
+  opts?: EngineOpts,
+): Promise<{ domain: string; text: string }> {
+  return runJson<{ domain: string; text: string }>(
+    ["memory", "read", domain || "general", "--json"],
+    opts,
+  );
+}
+
+export function surface(domain: string, force = false, opts?: EngineOpts): Promise<SurfaceResult> {
+  const args = ["surface", domain || "general"];
+  if (force) args.push("--force");
+  args.push("--json");
+  return runJson<SurfaceResult>(args, opts);
+}
+
+export function listFrameworks(opts?: EngineOpts): Promise<CatalogItem[]> {
+  return runJson<CatalogItem[]>(["frameworks", "list", "--json"], opts);
+}
+
+export function listLenses(opts?: EngineOpts): Promise<CatalogItem[]> {
+  return runJson<CatalogItem[]>(["lenses", "list", "--json"], opts);
+}
+
+export function searchHistory(
+  query: string,
+  limit?: number,
+  opts?: EngineOpts,
+): Promise<SearchHit[]> {
+  const args = ["search", query];
+  if (typeof limit === "number") args.push("--limit", String(limit));
+  args.push("--json");
+  return runJson<SearchHit[]>(args, opts);
+}
+
+export function listBenchQuestions(opts?: EngineOpts): Promise<BenchQuestionInfo[]> {
+  return runJson<BenchQuestionInfo[]>(["bench", "list", "--json"], opts);
+}
+
+export function listConnectors(opts?: EngineOpts): Promise<ConnectorInfo[]> {
+  return runJson<ConnectorInfo[]>(["connectors", "list", "--json"], opts);
+}
+
+// ── Config endpoints ─────────────────────────────────────────────────────────
+export function getModes(domain: string, opts?: EngineOpts): Promise<ModesState> {
+  return runJson<ModesState>(["modes", "get", domain || "general", "--json"], opts);
+}
+
+export interface ModesPatch {
+  web?: "allow" | "deny";
+  save?: "on" | "off";
+  serendipity?: "on" | "off";
+  auto?: "off" | "suggest" | "auto";
+  framework?: string; // id or "off"
+  lens?: string; // id, "all", or "off"
+}
+
+export function setModes(
+  domain: string,
+  patch: ModesPatch,
+  opts?: EngineOpts,
+): Promise<ModesState> {
+  const args = ["modes", "set", domain || "general"];
+  for (const [k, v] of Object.entries(patch)) {
+    if (v !== undefined) args.push(`--${k}`, String(v));
+  }
+  args.push("--json");
+  return runJson<ModesState>(args, opts);
+}
+
+export function getPrivacy(opts?: EngineOpts): Promise<PrivacyState> {
+  return runJson<PrivacyState>(["privacy", "get", "--json"], opts);
+}
+
+export function setPrivacy(bunker: boolean, opts?: EngineOpts): Promise<PrivacyState> {
+  return runJson<PrivacyState>(
+    ["privacy", "set", "--bunker", bunker ? "on" : "off", "--json"],
+    opts,
+  );
 }

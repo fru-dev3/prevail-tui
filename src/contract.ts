@@ -195,5 +195,146 @@ export interface ManifestPatch {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// council run --domain <d> --json  →  NDJSON stream of CouncilEvent
+//
+// The engine now owns the orchestrator (prevail-cli: src/council-json.ts). The
+// panel fans out in parallel; the chair synthesizes; the verdict is persisted to
+// <domain>/_decisions.jsonl so the council learns. We stream the same NDJSON the
+// desktop consumes.
+export type CouncilEventType =
+  | "start"
+  | "panel"
+  | "delta"
+  | "panelist"
+  | "chair"
+  | "verdict-delta"
+  | "verdict"
+  | "decision"
+  | "done"
+  | "error";
+
+export interface CouncilPanelistInfo {
+  idx: number;
+  cli: string;
+  model: string;
+  lens: string | null;
+}
+
+export interface CouncilEvent {
+  type: CouncilEventType;
+  thread: string;
+  ts: number;
+  domain?: string;
+  quorum?: number;
+  localOnly?: boolean;
+  /** present on `panel` — every panelist by stream index */
+  panelists?: CouncilPanelistInfo[];
+  /** present on `delta`/`panelist` — the panelist's stream index */
+  idx?: number;
+  /** token text on delta / verdict-delta; full verdict on `verdict` */
+  text?: string;
+  /** settled status on `panelist` */
+  ok?: boolean;
+  ms?: number;
+  /** chair label on `chair`/`verdict` */
+  chair?: string;
+  chairLabel?: string;
+  degraded?: boolean;
+  /** decision id on `decision` (key for council feedback) */
+  id?: string;
+  error?: string;
+}
+
+export interface CouncilRunRequest {
+  domain: string; // "" / "general" → General
+  message: string;
+  quorum?: number;
+  /** lens id, "all", or null/"off" — the engine resolves config when omitted */
+  lens?: string | null;
+  framework?: string | null;
+  clis?: CliKind[];
+  localOnly?: boolean;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// decisions list / council run — the persisted decision record.
+export interface DecisionFeedback {
+  rating: "up" | "down";
+  note?: string | null;
+}
+
+export interface DecisionRecord {
+  id: string;
+  ts: number;
+  type: string;
+  domain?: string | null;
+  prompt?: string;
+  verdict?: string;
+  chair?: string;
+  panel?: { cli: string; model: string; lens: string | null; ok: boolean; ms: number }[];
+  degraded?: boolean;
+  source?: string;
+  feedback?: DecisionFeedback;
+  [key: string]: unknown;
+}
+
+// surface [<domain>] --json
+export interface SurfaceResult {
+  questions: string[];
+  actions: string[];
+  generated_at: number;
+  stale: boolean;
+}
+
+// frameworks list / lenses list --json
+export interface CatalogItem {
+  id: string;
+  label: string;
+  blurb: string;
+}
+
+// modes get/set [<domain>] --json
+export interface ModesState {
+  domain: string;
+  web: "allow" | "deny";
+  save: boolean;
+  serendipity: boolean;
+  auto: "off" | "suggest" | "auto";
+  framework: { id: string | null; scope: "domain" | "global" | "none" };
+  lens: { sel: string | null; scope: "domain" | "global" | "none" };
+}
+
+// privacy get/set --json
+export interface PrivacyState {
+  bunker: boolean;
+}
+
+// search <query> --json
+export interface SearchHit {
+  domain: string;
+  session_id: string;
+  role: string;
+  content: string;
+  ts: number;
+}
+
+// bench list --json
+export interface BenchQuestionInfo {
+  id: string;
+  domain: string;
+  stakes: string;
+  verifiable: boolean;
+  prompt: string;
+}
+
+// connectors list --json
+export interface ConnectorInfo {
+  id: string;
+  title: string;
+  integration: string;
+  path: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Engine CLIs the prevail binary can drive.
 export type CliKind = "claude" | "codex" | "antigravity" | "gemini" | "ollama";
