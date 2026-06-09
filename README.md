@@ -43,16 +43,23 @@ bun run build               # → dist/prevail-tui (single binary, bun --compile
 
 ## What it does
 
-A four-tab cockpit over every life domain in the vault:
+A six-tab cockpit over every life domain in the vault:
 
 - **Sidebar** — all domains with a color-coded readiness **score badge** and
   open-loop count; the streaming domain is marked. Header shows the
-  **life-readiness** aggregate, a live clock, and the vault path.
-- **Chat** — streaming single-CLI chat (NDJSON), engine label, `↑/↓` prompt
-  recall, and slash commands.
+  **life-readiness** aggregate, a live clock, the vault path, and a **Bunker**
+  chip when local-only mode is on.
+- **Chat** — streaming chat (NDJSON). With Council on (or `/council <q>`), the
+  turn fans out to the engine's council. Engine label, `↑/↓` recall, slash
+  commands, and a config bar (web/save/serendipity/auto + framework/lens) that
+  **persists to the engine**.
+- **Insights** — the engine's proactive **surface** (questions + next actions,
+  `a` to (re)generate), the **decision log** with the `↑/↓` feedback the council
+  learns from, and the domain's distilled **long-term memory**.
 - **Score** — the headline score, the six breakdown dimensions as bars with
   their detail, the domain **relevance** rubric, surfaced gaps by severity,
   and the cached LLM assessment. `a` runs a fresh `score --audit`.
+- **State** — read-only vault markdown (`state.md`/`_state.md` + open-loops).
 - **Manifest** — identity + config; `e`/`m` edit label/summary inline.
 - **History** — sparkline of `score history` + delta + recent samples.
 
@@ -60,12 +67,14 @@ A four-tab cockpit over every life domain in the vault:
 
 | Context | Keys |
 |---------|------|
-| Sidebar | `↑/↓` (or `j/k`) domain · `g/G` first/last · `←/→` (or `tab`, `1`–`4`) switch tab · `i`/`⏎` focus chat · `a` audit (score tab) · `e`/`m` edit label/summary (manifest tab) · `r` refresh · `q` quit |
+| Sidebar | `↑/↓` (or `j/k`) domain · `g/G` first/last · `←/→` (or `tab`, `1`–`6`) switch tab · `i`/`⏎` focus chat · `a` audit (score) / surface (insights) · `e`/`m` edit label/summary (manifest) · `r` refresh · `q` quit |
 | Chat | type · `⏎` send · `↑/↓` recall · `esc` → domains |
 | Manifest edit | `⏎` save · `esc` cancel |
 
-Slash commands: `/council <q>` · `/score` · `/audit` · `/manifest` ·
-`/history` · `/clear` · `/help` · `/exit`. `ctrl+c` quits from anywhere.
+Slash commands: `/council <q>` · `/quorum <n\|off>` · `/feedback up\|down [note]` ·
+`/bunker on\|off` · `/search <text>` · `/insights` · `/surface` · `/score` ·
+`/audit` · `/state` · `/manifest` · `/history` · `/clear` · `/help` · `/exit`.
+`ctrl+c` quits from anywhere.
 
 ## Architecture
 
@@ -73,47 +82,43 @@ Slash commands: `/council <q>` · `/score` · `/audit` · `/manifest` ·
 |------|------|
 | `src/contract.ts` | Typed mirror of the engine's `--json`/NDJSON shapes (see `fd-apps-prevail-cli/docs/schemas`). |
 | `src/engine.ts` | **The only seam to the engine.** Binary resolution + env enrichment + `runJson()` (request/response) + `streamChat()` (NDJSON). Ported from the desktop's `engine.rs`. |
-| `src/council.ts` | Client-side council: fans one prompt to N panelists via `streamChat`, then a chair synthesis turn. |
+| `src/council.ts` | Thin adapter over the engine's `council run --json` NDJSON stream (panel + chair + quorum + persisted decision). The engine owns the fan-out. |
 | `src/format.ts` | Pure presentation helpers: score color, bars, sparkline, relative time, severity. |
 | `src/sidebar.tsx` | Header banner + life-domains sidebar. |
-| `src/panes.tsx` | Score / Manifest / History detail panes. |
+| `src/panes.tsx` | Insights / Score / State / Manifest / History detail panes. |
 | `src/chat.tsx` | Chat transcript + message rows + input. |
 | `src/app.tsx` | OpenTUI + React orchestrator: layout, tabs, state, keyboard. |
 | `src/index.tsx` | Entry: resolve vault, prefetch `score --all`, load domains, boot the renderer. |
 
-### Contract used today (read-only audit of the CLI)
+### Contract used (engine v1.7.0+)
 
 Request/response `--json`: `domains`, `score [--audit]`, `score --all`,
 `score history`, `manifest get/set`, `onboard recommend/apply`, `vault …`,
-`heartbeat …`, `gateway status`. Failure envelope: `{ ok:false, error, code }`.
+`heartbeat …`, `gateway status`, and the v1.7.0 additions —
+`council feedback`, `decisions list`, `memory read`, `surface`,
+`frameworks/lenses list`, `modes get/set`, `privacy get/set`, `search`,
+`bench list`, `connectors list`. Failure envelope: `{ ok:false, error, code }`.
 
-Streaming `chat --domain <d> --json` (NDJSON, message on stdin):
-`start → user → delta* → assistant → usage → done` (or `error`).
+Streaming (NDJSON, message on stdin):
+- `chat --domain <d> --json`: `start → user → delta* → assistant → usage → done`.
+- `council run --domain <d> --json`: `start → panel → delta* → panelist* →
+  chair → verdict-delta* → verdict → decision → done` (or `error`).
 
-## Gaps (engine work, owned by the CLI repo — not done here)
+## Engine seam
 
-The cockpit needs a few things the `--json` contract does **not** expose yet.
-This TUI works around each one client-side for now; when the engine ships the
-endpoint, swap the workaround for the real call.
-
-| Need | Engine status | This TUI's stopgap |
-|------|---------------|--------------------|
-| **Council streaming** (per-panelist deltas + chair verdict + disagreement) | in-process only (`runCouncilOneShot`) | `src/council.ts` fans out N single-CLI `chat --json` calls + a synthesis turn |
-| **Domain markdown views** (state / quickstart / prompts / skills) | read off disk | (planned) read the vault markdown directly, read-only |
-| **Frameworks / lenses** list+select | hardcoded in binary; no flag on `chat --json` | (planned) prepend the framework/lens preamble to the message client-side |
-| **Session history / full-text search** | no `--json` surface | (planned) read `_threads/*.jsonl` from the vault directly |
-| **CLI/model detection** | human-only `doctor` | (planned) probe, or add `prevail clis --json` upstream |
-
-**Recommended upstream additions** (for whoever owns the CLI): a real
-`prevail council --domain <d> --json` NDJSON stream (panelist-tagged deltas +
-verdict), `prevail domain <d> view <v> --json`, and `prevail clis --json`.
-Those would let this TUI drop every stopgap above.
+Everything goes through `src/engine.ts` — the only place this TUI talks to the
+`prevail` binary, the same decoupled architecture the desktop uses (`engine.rs`).
+The engine (v1.7.0+) now owns council orchestration, the decision log, surface,
+modes, privacy, and search, so the TUI carries **no** business logic of its own —
+it reads and writes the same `--json` contract the desktop does, against the
+same vault files.
 
 ## Status
 
-Working cockpit: domains sidebar with live score badges + life-readiness
-aggregate, streaming single-CLI chat, client-side council, and Score /
-Manifest / History detail tabs — all driven over the `--json` contract.
-Not yet implemented: domain markdown views (state/quickstart/prompts/skills),
-benchmark overlay, session history, framework/lens pickers, onboarding
-wizard. See the gap table.
+Full working cockpit driven entirely over the `--json` contract: domains
+sidebar with live score badges + life-readiness aggregate, streaming chat,
+**engine-driven council** (quorum + verdict feedback), the **Insights** tab
+(surface + decision log + long-term memory), per-domain **modes** and global
+**Bunker** that persist to the engine, framework/lens, and Score / State /
+Manifest / History detail tabs. Not yet surfaced: a dedicated benchmark page
+and the onboarding wizard (the engine exposes `bench list` / `onboard` for both).
